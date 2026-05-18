@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import time
@@ -14,6 +15,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 DEFAULT_MAX_NOTES_TO_SYNC = 100
 MARKDOWN_DIR = Path("data/notion_markdown")
 CHROMA_DIR = Path("chroma_db")
+SYNC_STATE_PATH = Path("sync_state.json")
 COLLECTION_NAME = "notion_notes"
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
 BATCH_SIZE = 100
@@ -73,6 +75,89 @@ def _normalize_sync_options(notebook_filter=None, max_notes=None):
     filter_value = filter_value.replace("-", "")
     raw_cap = DEFAULT_MAX_NOTES_TO_SYNC if max_notes in (None, "") else max_notes
     return filter_value, max(1, int(raw_cap))
+
+
+def load_sync_state(path=SYNC_STATE_PATH):
+    """Load the incremental sync state from disk.
+
+    Args:
+        path: JSON file storing `{page_id: last_edited_time}`.
+
+    Returns:
+        Dict mapping page ids to last edited timestamps. Missing files return `{}`.
+
+    Raises:
+        ValueError: If the file exists but is not a JSON object of string pairs.
+    """
+    if not path.exists():
+        return {}
+
+    state = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(state, dict):
+        raise ValueError("sync_state.json must contain a JSON object")
+    if any(not isinstance(k, str) or not isinstance(v, str) for k, v in state.items()):
+        raise ValueError("sync_state.json values must be page_id -> last_edited_time")
+    return state
+
+
+def save_sync_state(state, path=SYNC_STATE_PATH):
+    """Persist the incremental sync state to disk.
+
+    Args:
+        state: Dict mapping page ids to last edited timestamps.
+        path: JSON file destination.
+
+    The json is something like this:
+    {
+        "2a335282-1234-5678-90ab-cdef12345678": "2026-05-18T10:00:00.000Z",
+        "1e335282-1234-5678-90ab-cdef12345678": "2026-05-17T08:41:22.000Z"
+    }
+    """
+
+    # this checks if the key and the value is a string respectively.
+    if any(not isinstance(k, str) or not isinstance(v, str) for k, v in state.items()):
+        raise ValueError("sync_state.json values must be page_id -> last_edited_time")
+    path.write_text(
+        json.dumps(state, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def diff_sync_state(pages, previous_state):
+    """Classify current Notion pages against the last saved sync state.
+
+    Args:
+        pages: Raw Notion page objects returned by the database query.
+        previous_state: Prior `{page_id: last_edited_time}` mapping from disk.
+
+    Returns:
+        Dict containing changed pages, unchanged page ids, removed page ids,
+        and the next state snapshot for the current query result.
+    """
+    next_state = {}
+    # next_state is supposed to replace the old existing json in sync_state.json if there is one, once we fetch the pages from notion
+    pages_to_export = []
+    unchanged_page_ids = []
+
+    for page in pages:
+        meta = extract_page_meta(page)
+        page_id = meta["page_id"]
+        last_edited_time = meta["last_edited_time"]
+        # check if this key is actually valid ^
+        next_state[page_id] = last_edited_time
+
+        if previous_state.get(page_id) == last_edited_time:
+            unchanged_page_ids.append(page_id)
+            continue
+        pages_to_export.append(page)
+
+    removed_page_ids = sorted(set(previous_state) - set(next_state))
+    return {
+        "pages_to_export": pages_to_export,  # notion page objects
+        "unchanged_page_ids": unchanged_page_ids,
+        "removed_page_ids": removed_page_ids,
+        "next_state": next_state,
+    }
 
 
 def query_notion_pages(notion, notebook_filter=None, max_notes=None):
