@@ -43,7 +43,15 @@ def build_ui():
         )
 
         with gr.Row():
+            notebook_filter = gr.Textbox(
+                label="Notebook Filter",
+                placeholder="Optional notebook page ID",
+                scale=3,
+            )
+            max_notes = gr.Number(label="Max Notes", value=100, minimum=1, precision=0)
             sync_button = gr.Button("Sync Notion", variant="primary")
+
+        with gr.Row():
             sync_status = gr.Textbox(label="Sync Status", interactive=False, lines=4)
 
         with gr.Row():
@@ -60,7 +68,11 @@ def build_ui():
             ask_button = gr.Button("Send", variant="primary", scale=1)
             clear_button = gr.Button("Clear", scale=1)
 
-        sync_button.click(fn=sync_notion_notes, outputs=sync_status)
+        sync_button.click(
+            fn=sync_notion_notes,
+            inputs=[notebook_filter, max_notes],
+            outputs=sync_status,
+        )
         ask_button.click(
             fn=chat_reply,
             inputs=[question, chatbot],

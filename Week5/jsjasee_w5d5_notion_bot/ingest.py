@@ -11,7 +11,7 @@ from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-MAX_NOTES_TO_SYNC = 20
+DEFAULT_MAX_NOTES_TO_SYNC = 100
 MARKDOWN_DIR = Path("data/notion_markdown")
 CHROMA_DIR = Path("chroma_db")
 COLLECTION_NAME = "notion_notes"
@@ -22,7 +22,9 @@ BATCH_SIZE = 100
 def _page_title(page):
     for prop in page.get("properties", {}).values():
         if prop.get("type") == "title":
-            return "".join(item.get("plain_text", "") for item in prop.get("title", []))
+            return "".join(
+                item.get("plain_text", "") for item in prop.get("title", [])
+            )[:240]  # if titles are too long cannot save them to files
     return "Untitled"
 
 
@@ -57,7 +59,23 @@ def extract_page_meta(page):
     }
 
 
-def query_notion_pages(notion):
+def _normalize_sync_options(notebook_filter=None, max_notes=None):
+    """Normalize optional UI/env sync controls into query-ready values.
+
+    Args:
+        notebook_filter: Optional notebook page id from UI or env.
+        max_notes: Optional page cap from UI or env.
+
+    Returns:
+        Tuple of normalized notebook filter and positive integer cap.
+    """
+    filter_value = (notebook_filter or os.getenv("NOTEBOOK_FILTER", "")).strip()
+    filter_value = filter_value.replace("-", "")
+    raw_cap = DEFAULT_MAX_NOTES_TO_SYNC if max_notes in (None, "") else max_notes
+    return filter_value, max(1, int(raw_cap))
+
+
+def query_notion_pages(notion, notebook_filter=None, max_notes=None):
     """Query the Notes database, applying optional notebook and sync-cap filters.
 
     Args:
@@ -67,8 +85,7 @@ def query_notion_pages(notion):
         List of raw Notion page objects selected for sync.
     """
     database_id = os.environ["NOTION_NOTES_DATABASE_ID"]
-    notebook_filter = os.getenv("NOTEBOOK_FILTER", "").strip()
-    max_notes = int(MAX_NOTES_TO_SYNC or 20)
+    notebook_filter, max_notes = _normalize_sync_options(notebook_filter, max_notes)
     pages, cursor = [], None
 
     while True:
@@ -248,7 +265,7 @@ def rebuild_chroma_index(chunks):
     }
 
 
-def sync_notion_notes():
+def sync_notion_notes(notebook_filter=None, max_notes=None):
     """Run one full sync from Notion into local markdown files.
 
     Returns:
@@ -262,7 +279,8 @@ def sync_notion_notes():
     load_dotenv()
     notion = Client(auth=os.environ["NOTION_TOKEN"])
     n2m = get_n2m_client(notion)
-    pages = query_notion_pages(notion)
+    active_filter, active_cap = _normalize_sync_options(notebook_filter, max_notes)
+    pages = query_notion_pages(notion, active_filter, active_cap)
     clear_markdown_dir()
 
     exported = skipped = bytes_written = 0
@@ -281,6 +299,7 @@ def sync_notion_notes():
             failures.append(f"{meta['title']} ({meta['page_id']}): {exc}")
 
     summary = (
+        f"Notebook filter: {active_filter or 'all'} | Max notes: {active_cap}\n"
         f"Exported {exported}/{len(pages)} pages | "
         f"Skipped {skipped} | Failed {len(failures)} | "
         f"Bytes written {bytes_written}"

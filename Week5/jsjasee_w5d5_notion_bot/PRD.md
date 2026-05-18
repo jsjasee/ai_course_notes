@@ -73,12 +73,12 @@ Fetch selected pages from one Notion Notes database and save each as a local Mar
 
 **TODOs:**
 
-- [x] `.env`: `NOTION_TOKEN`, `NOTION_NOTES_DATABASE_ID`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY` (optional), `NOTEBOOK_FILTER` (optional)
-- [ ] `ingest.query_notion_pages()` — queries DB with optional notebook filter, returns page objects.
-- [ ] `ingest.extract_page_meta(page)` — returns metadata dict.
-- [ ] `ingest.clear_markdown_dir()` — deletes contents of `data/notion_markdown/`.
-- [ ] `ingest.write_markdown_file(meta, body_md)` — writes frontmatter + body to disk.
-- [ ] Sync summary string: pages exported, skipped, bytes written.
+- [x] `.env`: `NOTION_TOKEN`, `NOTION_NOTES_DATABASE_ID`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY` (optional), `NOTEBOOK_FILTER` (optional), `MAX_NOTES_TO_SYNC` (optional).
+- [x] `ingest.query_notion_pages()` — queries DB with optional notebook filter, returns page objects.
+- [x] `ingest.extract_page_meta(page)` — returns metadata dict.
+- [x] `ingest.clear_markdown_dir()` — deletes contents of `data/notion_markdown/`.
+- [x] `ingest.write_markdown_file(meta, body_md)` — writes frontmatter + body to disk.
+- [x] Sync summary string: pages exported, skipped, bytes written.
 
 #### Feature 2 — Page-to-Markdown via notion-to-md-py (P0)
 
@@ -94,12 +94,12 @@ Convert each selected Notion page to Markdown using `notion-to-md-py`. Thin wrap
 
 **TODOs:**
 
-- [ ] `utils.get_n2m_client(notion)` — returns a configured `NotionToMarkdown(notion)` instance (reused across pages within one sync).
-- [ ] `utils.convert_page_to_md(page_id, n2m)` — calls `n2m.page_to_markdown(page_id)` then `n2m.to_markdown_string(blocks).get('parent')`. Returns Markdown string.
-- [ ] `utils.post_process_md(md)` — light cleanup: collapse 3+ blank lines to 2, strip trailing whitespace per line. Only add transforms here when a real spot-check reveals an issue.
-- [ ] In `ingest.py`, wrap each page conversion in `try/except`; collect failures into a list shown in the sync summary (page_id, title, error).
-- [ ] Spot-check 3 pages BEFORE the full sync: (a) this Week 5 page (multi-column + toggles + code + callouts), (b) a toggle-heavy page, (c) a page with a Notion table or synced block. Diff against hand-written Markdown.
-- [ ] If columns flatten badly on (a) → decide between: accept (semantic content preserved, layout lost — fine for RAG), monkey-patch the `column_list` renderer, or write a targeted post-processor.
+- [x] `utils.get_n2m_client(notion)` — returns a configured `NotionToMarkdown(notion)` instance (reused across pages within one sync).
+- [x] `utils.convert_page_to_md(page_id, n2m)` — calls `n2m.page_to_markdown(page_id)` then `n2m.to_markdown_string(blocks).get('parent')`. Returns Markdown string.
+- [x] `utils.post_process_md(md)` — light cleanup: collapse 3+ blank lines to 2, strip trailing whitespace per line. Only add transforms here when a real spot-check reveals an issue.
+- [x] In `ingest.py`, wrap each page conversion in `try/except`; collect failures into a list shown in the sync summary (page_id, title, error).
+- [x] Spot-check 3 pages BEFORE the full sync: (a) this Week 5 page (multi-column + toggles + code + callouts), (b) a toggle-heavy page, (c) a page with a Notion table or synced block. Diff against hand-written Markdown.
+- [x] If columns flatten badly on (a) → decide between: accept (semantic content preserved, layout lost — fine for RAG), monkey-patch the `column_list` renderer, or write a targeted post-processor.
 
 #### Feature 3 — Markdown Loading & Chunking (P0)
 
@@ -114,11 +114,11 @@ Load Markdown files, parse frontmatter, split into chunks.
 
 **TODOs:**
 
-- [ ] `ingest.load_markdown_dir()` — returns list of `{meta, body}` dicts.
-- [ ] `ingest.parse_frontmatter(text)` — via `python-frontmatter`.
-- [ ] `ingest.chunk_documents(docs)` — `RecursiveCharacterTextSplitter`, `chunk_size=500`, `chunk_overlap=200`.
-- [ ] Prepend `f"# {title}\n[notebook: {notebook}]\n\n"` to each chunk's embedded text.
-- [ ] Print totals: pages loaded, chunks created.
+- [x] `ingest.load_markdown_dir()` — returns list of `{meta, body}` dicts.
+- [x] `ingest.parse_frontmatter(text)` — via `python-frontmatter`.
+- [x] `ingest.chunk_documents(docs)` — `RecursiveCharacterTextSplitter`, `chunk_size=500`, `chunk_overlap=200`.
+- [x] Prepend `f"# {title}\n[notebook: {notebook}]\n\n"` to each chunk's embedded text.
+- [x] Print totals: pages loaded, chunks created.
 
 #### Feature 4 — ChromaDB Index Rebuild (P0)
 
@@ -133,10 +133,10 @@ Clear and rebuild a single Chroma collection from current chunks.
 
 **TODOs:**
 
-- [ ] `ingest.get_chroma_client()` — `chromadb.PersistentClient(path="chroma_db")`.
-- [ ] `ingest.reset_collection()` — drop and recreate `notion_notes`.
-- [ ] Batch-add chunks (batch size 100) to avoid request size limits.
-- [ ] Return sync summary: page count, chunk count, time elapsed, estimated cost.
+- [x] `ingest.get_chroma_client()` — `chromadb.PersistentClient(path="chroma_db")`.
+- [x] `ingest.reset_collection()` — drop and recreate `notion_notes`.
+- [x] Batch-add chunks (batch size 100) to avoid request size limits.
+- [x] Return sync summary: page count, chunk count, time elapsed, estimated cost.
 
 #### Feature 5 — Question Answering with Sources (P0)
 
@@ -151,11 +151,11 @@ Retrieve top chunks and call LLM via LiteLLM grounded in those chunks.
 
 **TODOs:**
 
-- [ ] `answer.get_retriever(top_k=8)` — wraps Chroma as a LangChain retriever.
-- [ ] `answer.build_prompt(question, chunks)` — system + user prompt with chunk delimiters.
-- [ ] `answer.answer_question(question)` — `litellm.completion(model=ANSWER_MODEL, ...)`; default `openai/gpt-4o-mini`.
-- [ ] Returns `(answer_md, sources_md)`.
-- [ ] Dedupe sources by `page_id` before formatting.
+- [x] `answer.get_retriever(top_k=8)` — wraps Chroma as a LangChain retriever.
+- [x] `answer.build_prompt(question, chunks)` — system + user prompt with chunk delimiters.
+- [x] `answer.answer_question(question)` — `litellm.completion(model=ANSWER_MODEL, ...)`; default `openai/gpt-4o-mini`.
+- [x] Returns `(answer_md, sources_md)`.
+- [x] Dedupe sources by `page_id` before formatting.
 
 #### Feature 6 — Gradio App UI (P0)
 
@@ -170,11 +170,11 @@ Local UI with sync, ask, answer panel, sources panel.
 
 **TODOs:**
 
-- [ ] `app.build_ui()` — `gr.Blocks` with two-column layout.
-- [ ] Wire `Sync` → `ingest.sync_notion_notes()`.
-- [ ] Wire `Ask` → `answer.answer_question()`.
-- [ ] Truncate long chunk previews so the UI stays readable.
-- [ ] Smoke test: sync → ask 3 real questions → verify Notion links resolve.
+- [x] `app.build_ui()` — `gr.Blocks` with two-column layout.
+- [x] Wire `Sync` → `ingest.sync_notion_notes()`.
+- [x] Wire `Ask` → `answer.answer_question()`.
+- [x] Truncate long chunk previews so the UI stays readable.
+- [x] Smoke test: sync → ask 3 real questions → verify Notion links resolve.
 
 #### Feature 7 — Notebook Filter & Sync Cap (P1)
 
@@ -223,7 +223,11 @@ Extend beyond Notes into Tasks / Projects / Journal for true personal-knowledge-
 
 #### Feature 11 — Advanced Retrieval (P2, stretch)
 
-Query rewriting, query expansion, reranking — only added after the baseline works.
+Query rewriting, query expansion, reranking, semantic chunking aka asking LLM to chunk the documents — only added after the baseline works.
+
+#### Quality of life features
+
+- Remove links from markdown if possible
 
 ### Personal Smoke-Test Questions
 
