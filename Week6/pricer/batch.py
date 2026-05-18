@@ -6,6 +6,8 @@ import json
 import pickle
 from tqdm.notebook import tqdm
 
+# basically what we did in day 2 with some other things
+
 load_dotenv(override=True)
 groq = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
@@ -98,10 +100,13 @@ class Batch:
             for line in f:
                 json_line = json.loads(line)
                 id = int(json_line["custom_id"])
-                summary = json_line["response"]["body"]["choices"][0]["message"]["content"]
+                summary = json_line["response"]["body"]["choices"][0]["message"][
+                    "content"
+                ]
                 self.items[id].summary = summary
         self.done = True
 
+    # helper class methods (also those with the decorator, @classmethod, don't need the self in the args)
     @classmethod
     def create(cls, items, lite):
         for start in range(0, len(items), cls.BATCH_SIZE):
