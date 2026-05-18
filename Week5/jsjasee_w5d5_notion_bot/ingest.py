@@ -151,7 +151,9 @@ def diff_sync_state(pages, previous_state):
             continue
         pages_to_export.append(page)
 
-    removed_page_ids = sorted(set(previous_state) - set(next_state))
+    removed_page_ids = sorted(
+        set(previous_state) - set(next_state)
+    )  # returns all the page ids that are in the previous state but not in the next state, then sorted sorts it by alphabetical order.
     return {
         "pages_to_export": pages_to_export,  # notion page objects
         "unchanged_page_ids": unchanged_page_ids,
@@ -239,6 +241,11 @@ def write_markdown_file(meta, body_md):
     return path, path.stat().st_size
 
 
+def _markdown_path_for_page_id(page_id):
+    matches = list(MARKDOWN_DIR.glob(f"*__{page_id.replace('-', '')[:8]}.md"))
+    return matches[0] if matches else None
+
+
 def parse_frontmatter(text):
     """Parse one markdown file into metadata and body text.
 
@@ -305,6 +312,10 @@ def get_chroma_client():
     return chromadb.PersistentClient(path=str(CHROMA_DIR))
 
 
+def _get_or_create_collection(client):
+    return client.get_or_create_collection(COLLECTION_NAME)
+
+
 def reset_collection(client):
     """Drop and recreate the notes collection.
 
@@ -350,6 +361,74 @@ def rebuild_chroma_index(chunks):
     }
 
 
+# v2 of rebuild_chroma_index -> we only update / delete those that we need to, without rebuilding the entire collection.
+def apply_incremental_sync(pages_to_export, removed_page_ids, n2m):
+    """Apply changed and removed pages WITHOUT rebuilding the whole index.
+
+    Args:
+        pages_to_export: New or changed raw Notion page objects.
+        removed_page_ids: Page ids no longer present in the current query.
+        n2m: Reused `NotionToMarkdown` client for page conversion.
+
+    Returns:
+        Dict with export counts, removed counts, bytes written, and failures.
+    """
+    client = get_chroma_client()
+    collection = _get_or_create_collection(client)
+    vectorstore = Chroma(
+        client=client,
+        collection_name=COLLECTION_NAME,
+        embedding_function=OpenAIEmbeddings(model=EMBEDDING_MODEL),
+    )
+
+    for page_id in removed_page_ids:
+        collection.delete(where={"page_id": page_id})
+        markdown_path = _markdown_path_for_page_id(page_id)
+        if markdown_path and markdown_path.exists():
+            markdown_path.unlink()  # deletes the file
+
+    exported = skipped = bytes_written = 0
+    failures = []
+    changed_docs = []
+
+    from utils import convert_page_to_md
+
+    for page in pages_to_export:
+        meta = extract_page_meta(page)
+        try:
+            collection.delete(where={"page_id": meta["page_id"]})
+            markdown_path = _markdown_path_for_page_id(meta["page_id"])
+            if markdown_path and markdown_path.exists():
+                markdown_path.unlink()
+
+            body_md = convert_page_to_md(meta["page_id"], n2m)
+            if not body_md.strip():
+                skipped += 1
+                continue
+
+            path, size = write_markdown_file(meta, body_md)
+            doc = parse_frontmatter(path.read_text(encoding="utf-8"))
+            doc["meta"]["source_path"] = str(path)
+            changed_docs.append(doc)
+            exported += 1
+            bytes_written += size
+        except Exception as exc:
+            failures.append(f"{meta['title']} ({meta['page_id']}): {exc}")
+
+    changed_chunks = chunk_documents(changed_docs) if changed_docs else []
+    for start in range(0, len(changed_chunks), BATCH_SIZE):
+        vectorstore.add_documents(changed_chunks[start : start + BATCH_SIZE])
+
+    return {
+        "exported": exported,
+        "skipped": skipped,
+        "removed": len(removed_page_ids),
+        "bytes_written": bytes_written,
+        "chunk_count": len(changed_chunks),
+        "failures": failures,
+    }
+
+
 def sync_notion_notes(notebook_filter=None, max_notes=None):
     """Run one full sync from Notion into local markdown files.
 
@@ -359,44 +438,33 @@ def sync_notion_notes(notebook_filter=None, max_notes=None):
     from dotenv import load_dotenv
     from notion_client import Client
 
-    from utils import convert_page_to_md, get_n2m_client
+    from utils import get_n2m_client
 
     load_dotenv()
     notion = Client(auth=os.environ["NOTION_TOKEN"])
     n2m = get_n2m_client(notion)
     active_filter, active_cap = _normalize_sync_options(notebook_filter, max_notes)
     pages = query_notion_pages(notion, active_filter, active_cap)
-    clear_markdown_dir()
-
-    exported = skipped = bytes_written = 0
-    failures = []
-    for page in pages:
-        meta = extract_page_meta(page)
-        try:
-            body_md = convert_page_to_md(meta["page_id"], n2m)
-            if not body_md.strip():
-                skipped += 1
-                continue
-            _, size = write_markdown_file(meta, body_md)
-            exported += 1
-            bytes_written += size
-        except Exception as exc:
-            failures.append(f"{meta['title']} ({meta['page_id']}): {exc}")
+    previous_state = load_sync_state()
+    diff = diff_sync_state(pages, previous_state)
+    sync_stats = apply_incremental_sync(
+        diff["pages_to_export"], diff["removed_page_ids"], n2m
+    )
 
     summary = (
         f"Notebook filter: {active_filter or 'all'} | Max notes: {active_cap}\n"
-        f"Exported {exported}/{len(pages)} pages | "
-        f"Skipped {skipped} | Failed {len(failures)} | "
-        f"Bytes written {bytes_written}"
+        f"Exported {sync_stats['exported']} | "
+        f"Unchanged {len(diff['unchanged_page_ids'])} | "
+        f"Skipped {sync_stats['skipped']} | "
+        f"Removed {sync_stats['removed']} | "
+        f"Failed {len(sync_stats['failures'])} | "
+        f"Bytes written {sync_stats['bytes_written']}"
     )
-    if failures:
-        return summary + "\nFailures:\n- " + "\n- ".join(failures)
+    if sync_stats["failures"]:
+        return summary + "\nFailures:\n- " + "\n- ".join(sync_stats["failures"])
 
-    docs = load_markdown_dir()
-    chunks = chunk_documents(docs)
-    index_stats = rebuild_chroma_index(chunks)
+    save_sync_state(diff["next_state"])
     return (
         summary
-        + f"\nIndexed {index_stats['chunk_count']} chunks from {index_stats['page_count']} pages"
-        + f" into {index_stats['collection_name']} in {index_stats['elapsed_seconds']}s"
+        + f"\nIndexed {sync_stats['chunk_count']} changed chunks into {COLLECTION_NAME}"
     )
