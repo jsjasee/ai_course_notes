@@ -3,6 +3,50 @@ import gradio as gr
 from answer import answer_question
 from ingest import sync_notion_notes
 
+APP_CSS = """
+:root {
+    --page-bg: linear-gradient(180deg, #f7f1e8 0%, #efe7db 100%);
+    --panel-bg: rgba(255, 252, 247, 0.88);
+    --panel-alt: rgba(245, 237, 223, 0.95);
+    --border: #d7c6af;
+    --ink: #2f2419;
+    --muted: #6f5b48;
+    --accent: #a45a3f;
+}
+
+.gradio-container {
+    background: var(--page-bg);
+    color: var(--ink);
+    font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+}
+
+#app-shell {
+    max-width: 1180px;
+    margin: 0 auto;
+}
+
+.hero, .control-bar, .panel-card, .composer {
+    background: var(--panel-bg);
+    border: 1px solid var(--border);
+    border-radius: 22px;
+    box-shadow: 0 18px 50px rgba(84, 58, 32, 0.08);
+}
+
+.hero { padding: 8px 10px; }
+.control-bar, .composer { padding: 8px; }
+.panel-card { padding: 10px; min-height: 560px; }
+.sources-card { background: var(--panel-alt); }
+
+.hero h1, .panel-card label, .control-bar label, .composer label {
+    color: var(--ink) !important;
+}
+
+.hero p { color: var(--muted); }
+.panel-card .prose, .panel-card .md, .panel-card .message { color: var(--ink); }
+.sources-card a { color: var(--accent); }
+button.primary { background: var(--accent) !important; border: none !important; }
+"""
+
 
 def chat_reply(message, history):
     """Append one grounded answer to the chat history.
@@ -34,39 +78,50 @@ def build_ui():
     Returns:
         Configured `gr.Blocks` app instance.
     """
-    with gr.Blocks(title="Notion Notes Assistant") as app:
-        gr.Markdown(
+    with gr.Blocks(title="Notion Notes Assistant", css=APP_CSS) as app:
+        with gr.Column(elem_id="app-shell"):
+            gr.Markdown(
             """
             # Notion Notes Assistant
             Sync your Notion notes into Chroma, then chat with answers grounded in your notes.
-            """
-        )
-
-        with gr.Row():
-            notebook_filter = gr.Textbox(
-                label="Notebook Filter",
-                placeholder="Optional notebook page ID",
-                scale=3,
+            """,
+                elem_classes="hero",
             )
-            max_notes = gr.Number(label="Max Notes", value=100, minimum=1, precision=0)
-            sync_button = gr.Button("Sync Notion", variant="primary")
 
-        with gr.Row():
-            sync_status = gr.Textbox(label="Sync Status", interactive=False, lines=4)
+            with gr.Row(elem_classes="control-bar"):
+                notebook_filter = gr.Textbox(
+                    label="Notebook Filter",
+                    placeholder="Optional notebook page ID",
+                    scale=3,
+                )
+                max_notes = gr.Number(
+                    label="Max Notes", value=100, minimum=1, precision=0
+                )
+                sync_button = gr.Button("Sync Notion", variant="primary")
 
-        with gr.Row():
-            chatbot = gr.Chatbot(label="Chat", type="messages", height=520)
-            sources_output = gr.Markdown(label="Sources")
+            with gr.Row():
+                sync_status = gr.Textbox(label="Sync Status", interactive=False, lines=4)
 
-        with gr.Row():
-            question = gr.Textbox(
-                label="Message",
-                placeholder="Ask something about your notes...",
-                lines=2,
-                scale=5,
-            )
-            ask_button = gr.Button("Send", variant="primary", scale=1)
-            clear_button = gr.Button("Clear", scale=1)
+            with gr.Row():
+                chatbot = gr.Chatbot(
+                    label="Chat",
+                    type="messages",
+                    height=520,
+                    elem_classes="panel-card",
+                )
+                sources_output = gr.Markdown(
+                    label="Sources", elem_classes="panel-card sources-card"
+                )
+
+            with gr.Row(elem_classes="composer"):
+                question = gr.Textbox(
+                    label="Message",
+                    placeholder="Ask something about your notes...",
+                    lines=2,
+                    scale=5,
+                )
+                ask_button = gr.Button("Send", variant="primary", scale=1)
+                clear_button = gr.Button("Clear", scale=1)
 
         sync_button.click(
             fn=sync_notion_notes,
