@@ -193,8 +193,8 @@ def answer_question(question, history=None, top_k=None):
     for chunk in chunks:
         meta = chunk.metadata
         page_id = meta["page_id"]
-        if page_id in seen_page_ids:
-            continue
+        # if page_id in seen_page_ids:
+        #     continue
         seen_page_ids.add(page_id)
         preview = chunk.page_content.replace("\n", " ").strip()[:300]
         source_lines.append(
