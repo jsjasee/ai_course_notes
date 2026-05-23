@@ -2,6 +2,7 @@ import json
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import yaml
 
@@ -11,6 +12,9 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from litellm import completion
+from pydantic import BaseModel, Field
+from tenacity import retry, wait_exponential
 
 DEFAULT_MAX_NOTES_TO_SYNC = 100
 MARKDOWN_DIR = Path("data/notion_markdown")
@@ -19,6 +23,39 @@ SYNC_STATE_PATH = Path("sync_state.json")
 COLLECTION_NAME = "notion_notes"
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
 BATCH_SIZE = 100
+CHUNKING_STRATEGY = os.getenv(
+    "CHUNKING_STRATEGY", "semantic"
+)  # this is to let it choose between "recursive" which is the free recursive_text_splitter by langchain, or "semantic" aka use LLM to chunk things.
+SEMANTIC_CHUNK_MODEL = os.getenv("SEMANTIC_CHUNK_MODEL", "openai/gpt-4.1-nano")
+AVERAGE_CHUNK_SIZE = int(os.getenv("AVERAGE_CHUNK_SIZE", "1000"))
+SEMANTIC_CHUNK_WORKERS = int(os.getenv("SEMANTIC_CHUNK_WORKERS", "3"))
+
+
+class Chunk(BaseModel):
+    """One semantic chunk returned by the LLM chunker."""
+
+    headline: str = Field(description="Short heading likely to match a user query.")
+    summary: str = Field(
+        description="One to three sentences using plain vocabulary and synonyms."
+    )
+    original_text: str = Field(
+        description="Original chunk text copied verbatim from the source document."
+    )
+
+    def as_document(self, meta, chunk_index):
+        """Convert one semantic chunk into a LangChain document with note metadata."""
+        # LangChain Document is useful here because we can pass it to Chroma, and chroma already knows how to read it with Document.page_content and Document.metadata
+        # in answer.py, retrieval also returns the langchain Document objects then we can read it like Document.page_content and Document.metadata
+        return Document(
+            page_content=f"{self.headline}\n\n{self.summary}\n\n{self.original_text}",
+            metadata={**meta, "chunk_index": chunk_index},
+        )
+
+
+class Chunks(BaseModel):
+    """Structured list wrapper for semantic chunking output."""
+
+    chunks: list[Chunk]
 
 
 def _page_title(page):
@@ -277,6 +314,67 @@ def load_markdown_dir():
     return docs
 
 
+def make_semantic_chunk_prompt(doc):
+    """Build the LLM prompt for semantic chunking of one markdown note.
+
+    Args:
+        doc: One note dict from `load_markdown_dir()`.
+
+    Returns:
+        Prompt string instructing the model to emit structured chunks.
+    """
+    meta = doc["meta"]
+    how_many = max(1, (len(doc["body"]) // AVERAGE_CHUNK_SIZE) + 1)
+    return f"""
+You split one personal Notion note into overlapping semantic chunks for retrieval.
+
+Notebook: {meta.get("notebook", "")}
+Title: {meta.get("title", "Untitled")}
+Source path: {meta.get("source_path", "")}
+
+Preserve the entire note across chunks. Leave nothing out.
+This note should probably split into at least {how_many} chunks, but use judgment.
+Overlap chunk boundaries enough to preserve context.
+
+For each chunk return:
+- headline: a short query-friendly heading
+- summary: 1-3 sentences using plain vocabulary, synonyms, and likely search terms
+- original_text: the exact original text for that chunk, copied verbatim
+
+Note:
+
+{doc["body"]}
+""".strip()
+
+
+def _recursive_chunks_for_doc(doc, splitter):
+    meta = doc["meta"]
+    prefix = (
+        f"# {meta.get('title', 'Untitled')}\n[notebook: {meta.get('notebook', '')}]\n\n"
+    )
+    return [
+        Document(
+            page_content=prefix + body_chunk,
+            metadata={**meta, "chunk_index": chunk_index},
+        )
+        for chunk_index, body_chunk in enumerate(splitter.split_text(doc["body"]))
+    ]
+
+
+@retry(wait=wait_exponential(multiplier=1, min=2, max=30))
+def _semantic_chunks_for_doc(doc):
+    response = completion(
+        model=os.getenv("SEMANTIC_CHUNK_MODEL", SEMANTIC_CHUNK_MODEL),
+        messages=[{"role": "user", "content": make_semantic_chunk_prompt(doc)}],
+        response_format=Chunks,
+    )
+    parsed = Chunks.model_validate_json(response.choices[0].message.content)
+    return [
+        chunk.as_document(doc["meta"], chunk_index)
+        for chunk_index, chunk in enumerate(parsed.chunks)
+    ]
+
+
 def chunk_documents(docs):
     """Split markdown docs into searchable chunk documents.
 
@@ -286,24 +384,24 @@ def chunk_documents(docs):
     Returns:
         List of LangChain `Document` chunks with propagated metadata.
     """
-    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=200)
-    chunks = []
-    for doc in docs:
-        meta = doc["meta"]
-        title = meta.get("title", "Untitled")
-        notebook = meta.get("notebook", "")
-        prefix = f"# {title}\n[notebook: {notebook}]\n\n"
-        for chunk_index, body_chunk in enumerate(splitter.split_text(doc["body"])):
-            chunks.append(
-                Document(
-                    page_content=prefix + body_chunk,
-                    metadata={
-                        **meta,
-                        "chunk_index": chunk_index,
-                    },  # we are ATTACHING the metadata to the chunks, so when we chunk it into chroma DB, the metadata is already attached to it.
+    if CHUNKING_STRATEGY == "semantic":
+        chunks = []
+        with ThreadPoolExecutor(max_workers=max(1, SEMANTIC_CHUNK_WORKERS)) as executor:
+            futures = {
+                executor.submit(_semantic_chunks_for_doc, doc): doc["meta"].get(
+                    "title", "Untitled"
                 )
-            )
+                for doc in docs
+            }
+            for future in as_completed(futures):
+                chunks.extend(future.result())
+    else:
+        splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=200)
+        chunks = []
+        for doc in docs:
+            chunks.extend(_recursive_chunks_for_doc(doc, splitter))
     print(f"Created {len(chunks)} chunks from {len(docs)} pages")
+    print(chunks[1])
     return chunks
 
 

@@ -187,7 +187,7 @@ def answer_question(question, history=None, top_k=None):
     )
     answer_md = response.choices[0].message.content.strip()
 
-    # De-duplicating the repeated chunks by page_id if any
+    # De-duplicating the repeated chunks by page_id if any (dedupe only affects what user sees in the gradio app, NOT what the LLM sees.)
     seen_page_ids = set()
     source_lines = []
     for chunk in chunks:
