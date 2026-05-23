@@ -12,6 +12,7 @@ __pycache__
 
 # test file
 **/*.jsonl
+*.json
 
 # Github's default gitignore for Python
 
