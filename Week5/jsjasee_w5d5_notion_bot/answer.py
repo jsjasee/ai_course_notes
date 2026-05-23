@@ -11,6 +11,8 @@ from ingest import CHROMA_DIR, COLLECTION_NAME, EMBEDDING_MODEL
 ANSWER_MODEL = os.getenv("ANSWER_MODEL", "openrouter/openai/gpt-oss-120b")
 QUERY_REWRITE_MODEL = os.getenv("QUERY_REWRITE_MODEL", "openai/gpt-4.1-nano")
 RERANK_MODEL = os.getenv("RERANK_MODEL", "openai/gpt-4.1-nano")
+RETRIEVAL_K = int(os.getenv("RETRIEVAL_K", "20"))
+FINAL_K = int(os.getenv("FINAL_K", "10"))
 
 
 class RankOrder(BaseModel):
@@ -125,7 +127,7 @@ def rerank(question, chunks):
     chunk_block = "\n\n".join(
         f"# CHUNK ID: {index}\n\n{chunk.page_content}"
         for index, chunk in enumerate(chunks, start=1)
-    )
+    )  # we are given each chunk an id based on its position in the list
     response = completion(
         model=os.getenv("RERANK_MODEL", RERANK_MODEL),
         messages=[
@@ -145,34 +147,39 @@ def rerank(question, chunks):
                 ),
             },
         ],
-        response_format=RankOrder,
+        response_format=RankOrder,  # so its just a list of numbers (chunk ids) that is being returned
     )
-    ranked_ids = RankOrder.model_validate_json(response.choices[0].message.content).order
+    ranked_ids = RankOrder.model_validate_json(
+        response.choices[0].message.content
+    ).order
     ranked_chunks = [
-        chunks[chunk_id - 1]
-        for chunk_id in ranked_ids
-        if 1 <= chunk_id <= len(chunks)
+        chunks[chunk_id - 1] for chunk_id in ranked_ids if 1 <= chunk_id <= len(chunks)
     ]
     return ranked_chunks if len(ranked_chunks) == len(chunks) else chunks
 
 
-def answer_question(question, history=None, top_k=20):
+def answer_question(question, history=None, top_k=None):
     """Answer a question from the indexed notes and format distinct sources.
 
     Args:
         question: User question string.
         history: Optional chat history for Feature 5.5 query rewriting.
-        top_k: Number of chunks to retrieve.
+        top_k: Optional number of reranked chunks kept for the answer prompt.
 
     Returns:
         Tuple of `(answer_md, sources_md)`.
     """
     load_dotenv()
+    final_k = max(1, top_k or FINAL_K)
+    retrieval_k = max(RETRIEVAL_K, final_k)
     retrieval_query = rewrite_question(question, history=history)
     print(retrieval_query)
-    chunks = get_retriever(top_k=top_k).invoke(retrieval_query)
-    if not chunks:
+    retrieved_chunks = get_retriever(top_k=retrieval_k).invoke(retrieval_query)
+    if not retrieved_chunks:
         return "I couldn't find this in your notes.", "No sources found."
+    chunks = rerank(question, retrieved_chunks)[
+        :final_k
+    ]  # get the first K chunks from the reranked chunks
 
     response = completion(
         model=os.getenv("ANSWER_MODEL", ANSWER_MODEL),
