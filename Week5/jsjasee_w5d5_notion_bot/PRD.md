@@ -1,14 +1,3 @@
-<aside>
-📄
-
-**Aligned to:** Week 5 Major Challenge — assemble files → vectorize in Chroma → conversational AI.
-
-**Stack decision:** all Python; use [`notion-to-md-py`](https://github.com/SwordAndTea/notion-to-md-py) (port of Node's popular `notion-to-md`, MIT, last push 11 May 2026). Smoke-tested on a sample page — converts cleanly and preserves cross-page links as Markdown links (correct MVP behavior: linked pages either get indexed independently or stay out of scope).
-
-**Packages used:** https://github.com/ramnes/notion-sdk-py & https://github.com/SwordAndTea/notion-to-md-py
-
-</aside>
-
 ### What it is
 
 A local Gradio app that turns my own Notion study notes into a conversational knowledge worker. The MVP queries one Notion Notes database (filtered to a single notebook via `notion-client`), converts each selected page to Markdown via `notion-to-md-py`, indexes the Markdown in ChromaDB, and answers questions with grounded source chunks linking back to the original Notion pages.
@@ -198,9 +187,9 @@ Avoid re-embedding unchanged pages.
 
 **TODOs:**
 
-- [ ] Load/save `sync_state.json`.
-- [ ] Diff current vs previous `last_edited_time` per page.
-- [ ] Delete stale chunks from Chroma by `page_id` before re-adding.
+- [x] Load/save `sync_state.json`.
+- [x] Diff current vs previous `last_edited_time` per page.
+- [x] Delete stale chunks from Chroma by `page_id` before re-adding.
 
 #### Feature 9 — Retrieval Debug Panel (P1)
 
@@ -225,9 +214,78 @@ Extend beyond Notes into Tasks / Projects / Journal for true personal-knowledge-
 
 Query rewriting, query expansion, reranking, semantic chunking aka asking LLM to chunk the documents — only added after the baseline works.
 
+#### Feature 12 — Evals (P1)
+
+A 100-question evaluation harness (jsonl test set + forked evaluator) used to compare chunking strategies, embedding models, prompts, and retrieval techniques with quantitative feedback rather than vibes. Forked from `Week5/pro_implementation/eval.py` with deliberate modifications for personal-notes domain (not Insurellm-style factoid retrieval).
+
+Path to this week 5 folder: /Users/tayjiasheng/AI Projects/Notes/Week5
+
+**Design principles (locked in via Mode 9 sparring session, 20 May 2026):**
+
+- **Keywords grade retrieval, not answers.** Keywords are matched against retrieved chunks (`doc.page_content`), NOT the generated answer. Answer quality is graded separately via LLM-as-judge.
+- **Per-category metrics, not one averaged number.** Question shapes need different primary metrics — averaging across shapes hides signal.
+- **Vocabulary leakage is real.** LLM-generated questions inherit document phrasing → inflated retrieval scores. Mitigated by mixing hand-written questions with LLM-generated ones, and forcing the generator to rephrase using different vocabulary (abbreviations, slang, vague phrasing) instead of echoing the notes.
+- **Negative tests are non-negotiable.** Without questions whose correct answer is _"not in my notes,"_ hallucination is invisible.
+
+**Test set composition (`tests.jsonl`, 50 questions):**
+
+- 15 (30%) — hand-written from real usage / seed questions across all 4 shapes
+- 25 (50%) — LLM-generated, seeded with the 15 hand-written, vetted manually
+- 10 (20%) — negative cases (topics genuinely absent from notes)
+
+**Question shape taxonomy** — every question tagged with `category`:
+
+| Shape           | Example                                            | Primary metric(s)                       |
+| --------------- | -------------------------------------------------- | --------------------------------------- |
+| `existence`     | "Have I covered X before?"                         | Recall@k + LLM-judge (completeness)     |
+| `multi_doc`     | "What are my notes on X?"                          | Recall@k + nDCG + LLM-judge (synthesis) |
+| `specific_fact` | "Who do I contact for X?" / "What do I get for Y?" | MRR + LLM-judge (accuracy)              |
+| `negative`      | Topics genuinely not in notes                      | Refusal correctness (binary)            |
+
+**jsonl schema (per line):**
+
+- `question` (string)
+- `category` (enum: `existence` | `multi_doc` | `specific_fact` | `negative`)
+- `keywords` (list[str]) — expected to appear in retrieved chunks; for `negative` cases this is `[]`
+- `reference_answer` (string) — for `negative` cases: _"I couldn't find this in your notes."_
+- `expected_source_ids` (optional list[str]) — page IDs that _should_ surface in retrieval, most useful for `multi_doc`
+
+**Synthetic generation vetting heuristic:**
+
+- Seed the generator with the 15 hand-written questions as few-shot examples
+- Prompt it to deliberately vary vocabulary: ~1 in 3 should use abbreviations, colloquialisms, or vague phrasing
+- For each batch of 25, manually replace any question whose phrasing is >70% identical to a sentence in the source doc
+- Heuristic: if it reads like a textbook, kill it; if it reads like something you'd type at 11pm tired, ship it
+
+**Acceptance:**
+
+- `tests.jsonl` contains 100 questions, each validated by a Pydantic `TestQuestion` schema (extends pro_implementation's with `expected_source_ids` and the 4-value `category` enum).
+- `eval.py` (forked) reports MRR, nDCG, Recall@k, keyword coverage **per category** AND overall.
+- `RefusalEval` (new) grades `negative` questions on whether the bot correctly said it couldn't find the info — binary score.
+- `AnswerEval` (modified) weights _completeness_ heavily for `multi_doc`, _accuracy_ heavily for `specific_fact`.
+- Running evals against the current baseline produces per-category dashboards; changing `chunk_size` in `ingest.py` and re-running shows whether the change helped, hurt, or was neutral _per shape_.
+- Eval run completes in under ~5 min for all 100 questions (parallelized where possible).
+
+**TODOs:**
+
+- [x] Write 15 seed questions by hand across all 4 shapes (3-4 per shape, drawn from real usage of the bot + the 5 personal smoke-test questions above). Non-negotiable — these are the foundation.
+- [x] Draft prompt for synthetic question generator (handoff to Mode 5 Transformer #12).
+- [x] Run generator with seeds; vet 25 outputs against the heuristic above.
+- [x] Hand-curate 10 negative cases (topics I'm certain my notes don't cover).
+- [ ] Define Pydantic `TestQuestion` schema with `category` enum + optional `expected_source_ids`.
+- [ ] Fork `Week5/pro_implementation/eval.py` into project's `evaluation/eval.py`.
+- [ ] Add `calculate_recall_at_k(keywords, retrieved_docs, k)` — binary, did ANY relevant chunk appear in top k.
+- [ ] Add per-category aggregation: group by `category`, report metrics per group AND overall.
+- [ ] Add `RefusalEval(BaseModel)` Pydantic class + LLM-judge call for `negative` questions.
+- [ ] Modify `AnswerEval` prompt to apply category-aware weighting.
+- [ ] Wire eval results into Gradio UI (or CLI table) with per-category breakdown. (This one would be `evaluator.py` with a separate Gradio UI interface
+- [ ] Run baseline eval; record scores per category as the reference point before any RAG-technique experiments.
+
 #### Quality of life features
 
 - Remove links from markdown if possible
+- Change prompts for Notion RAG chatbot
+- Move to pydantic instead of formatter
 
 ### Personal Smoke-Test Questions
 
