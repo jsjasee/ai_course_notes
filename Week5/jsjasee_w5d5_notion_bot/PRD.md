@@ -214,6 +214,221 @@ Extend beyond Notes into Tasks / Projects / Journal for true personal-knowledge-
 
 Query rewriting, query expansion, reranking, semantic chunking aka asking LLM to chunk the documents — only added after the baseline works.
 
+<aside>
+📎
+
+**Reference:** `jsjasee/ai_course_notes` → `Week5/pro_implementation/ingest.py` and `answer.py`. Scope of this section: **semantic chunking + re-ranking only.** Query rewriting / query expansion are tracked but out of scope here.
+
+</aside>
+
+#### 11a — Semantic Chunking (LLM-as-chunker)
+
+**Idea (your mental model, confirmed against `ingest.py`):** instead of `RecursiveCharacterTextSplitter` splitting on character count, hand each document to an LLM and ask it to emit a list of overlapping chunks. Each chunk is a Pydantic object with three fields — `headline`, `summary`, `original_text` — plus metadata attached separately. The **embedded text** is the concatenation `headline + "\n\n" + summary + "\n\n" + original_text`, so the embedding model sees a query-friendly heading + a paraphrased summary in addition to the raw text. This widens vocabulary surface area (more ways for a user's phrasing to hit) without losing the original wording for the answer LLM to use as context.
+
+**Why it should help my Notion corpus specifically:**
+
+- My notes are messy: code blocks, callouts, multi-column layouts, toggles flattened by `notion-to-md-py`. A character-count splitter slices through this without caring about meaning.
+- An LLM chunker can keep a code snippet + its surrounding explanation together, and write a `summary` that uses the vocabulary I'd actually search with (e.g. "the classmethod thing" → summary mentions both `@classmethod` and "required for Pydantic validators").
+- This directly attacks the **vocabulary leakage** problem from Feature 12: synthetic test questions were inflating scores because chunks echoed source phrasing. A paraphrased `summary` field breaks that mirror.
+
+**Pydantic schema (mirrors `ingest.py`):**
+
+```python
+class Chunk(BaseModel):
+    headline: str = Field(description="A brief heading for this chunk, typically a few words, that is most likely to be surfaced in a query")
+    summary: str = Field(description="A few sentences summarizing the content of this chunk to answer common questions")
+    original_text: str = Field(description="The original text of this chunk from the provided document, exactly as is, not changed in any way")
+
+    def as_result(self, document):
+        metadata = {"source": document["source"], "type": document["type"], "page_id": document["page_id"], "title": document["title"], "notebook": document["notebook"], "url": document["url"]}
+        return Result(
+            page_content=self.headline + "\n\n" + self.summary + "\n\n" + self.original_text,
+            metadata=metadata,
+        )
+
+class Chunks(BaseModel):
+    chunks: list[Chunk]
+```
+
+**Chunk-count hint in the prompt (the `how_many` trick from `ingest.py`):**
+
+Instead of fixing the chunk count, compute a soft target from doc length and let the LLM deviate as needed:
+
+```python
+AVERAGE_CHUNK_SIZE = 100  # tune per corpus; pro_implementation uses 100 for Insurellm md docs
+how_many = (len(document["text"]) // AVERAGE_CHUNK_SIZE) + 1
+```
+
+Then embed `{how_many}` into the prompt as "probably split into at least N chunks, but use judgment." For my Notion pages (the Week 5 page itself is huge), `AVERAGE_CHUNK_SIZE` will need tuning — start with `100` characters → expect dozens of chunks per long page. **Sanity tune:** run on the Week 5 page first, eyeball chunk granularity, then bump `AVERAGE_CHUNK_SIZE` up if chunks are too small or down if a single chunk is swallowing multiple distinct concepts.
+
+**Prompt (adapted from `make_prompt` in `ingest.py`):**
+
+```python
+def make_prompt(document):
+    how_many = (len(document["text"]) // AVERAGE_CHUNK_SIZE) + 1
+    return f"""
+You take a document and split it into overlapping chunks for a personal Notion knowledge base.
+
+The document is from notebook: {document['notebook']}
+The document title is: {document['title']}
+The document source path is: {document['source']}
+
+A chatbot will use these chunks to answer questions about the user's own study notes, workflows, and learnings.
+Divide the document so the ENTIRE document is preserved across chunks — leave nothing out.
+This document should probably split into at least {how_many} chunks; deviate if the content asks for it.
+Overlap chunks by ~25% (~50 words) so context is preserved at boundaries.
+
+For each chunk: provide a headline (a few words), a summary (1-3 sentences in plain vocabulary the user might actually search with — including abbreviations and synonyms), and the original_text verbatim.
+
+Document:
+
+{document['text']}
+
+Respond with the chunks.
+"""
+```
+
+**Parallelism (`multiprocessing.Pool` pattern):**
+
+The LLM call is the bottleneck. `pro_implementation/ingest.py` uses `multiprocessing.Pool` with `WORKERS = 3` and `pool.imap_unordered` + `tqdm` for a progress bar. **Tenacity** decorator on `process_document` for exponential backoff on rate-limit errors (`wait_exponential(multiplier=1, min=10, max=240)`).
+
+```python
+WORKERS = 3  # drop to 1 if rate-limited
+wait = wait_exponential(multiplier=1, min=10, max=240)
+
+@retry(wait=wait)
+def process_document(document):
+    messages = [{"role": "user", "content": make_prompt(document)}]
+    response = completion(model=MODEL, messages=messages, response_format=Chunks)
+    doc_as_chunks = Chunks.model_validate_json(response.choices[0].message.content).chunks
+    return [chunk.as_result(document) for chunk in doc_as_chunks]
+
+def create_chunks(documents):
+    chunks = []
+    with Pool(processes=WORKERS) as pool:
+        for result in tqdm(pool.imap_unordered(process_document, documents), total=len(documents)):
+            chunks.extend(result)
+    return chunks
+```
+
+**Cost / time budget:** semantic chunking calls the LLM once per document. For 20–50 Notion pages × `gpt-4.1-nano` (or `gpt-4o-mini`) with structured output → still under the ≤ $0.50 re-index target, but each full re-index now takes minutes, not seconds. Combine with **Feature 8 (incremental sync)** so only changed pages get re-chunked.
+
+**Acceptance:**
+
+- [ ] `Chunk(BaseModel)` and `Chunks(BaseModel)` Pydantic classes added to `ingest.py` (sit alongside / replace the current `RecursiveCharacterTextSplitter` path; keep the old path behind a flag for A/B in evals).
+- [ ] `make_prompt(document)` produces a prompt with `how_many = (len(text) // AVERAGE_CHUNK_SIZE) + 1`.
+- [ ] `process_document` wrapped with `@retry(wait=wait_exponential(...))` (tenacity).
+- [ ] `create_chunks` uses `multiprocessing.Pool(WORKERS)` with `imap_unordered` + `tqdm`.
+- [ ] Embedded text = `headline + "\n\n" + summary + "\n\n" + original_text`.
+- [ ] Metadata still carries `page_id`, `title`, `url`, `notebook`, `source_path`, `chunk_index`.
+- [ ] Re-run Feature 12 evals against baseline (recursive char splitter) vs semantic chunking — record per-category deltas (MRR / nDCG / Recall@k / answer accuracy).
+
+**Open questions to resolve while building:**
+
+- What's the right `AVERAGE_CHUNK_SIZE` for my Notion notes? Pro_implementation uses 100 for tidy Insurellm markdown; my notes are denser. Spot-check on the Week 5 page first.
+- Does the LLM faithfully return `original_text` verbatim, or does it paraphrase under the hood? Add a hash check: every `original_text` substring should appear in the source doc; flag chunks where it doesn't.
+
+#### 11b — LLM Re-ranking
+
+**Idea (your mental model, confirmed against `answer.py`):** retrieve more chunks than we need from Chroma, then call an LLM to re-rank them by relevance to the original question, keep the top N, and only THOSE go into the final answer prompt. The re-ranker LLM never sees the answer task — it only emits a list of chunk IDs in relevance order.
+
+**Why it should help my eval scores:**
+
+- Embedding similarity is a single shot; it can rank a topically-close-but-irrelevant chunk above a precise hit. The re-ranker reads the question + chunks together and can spot the actual fit.
+- Directly improves nDCG (distribution-of-relevance metric) more than MRR.
+- For `multi_doc` questions (Feature 12 category), re-ranking biases the top-K toward chunks from _different_ pages, helping synthesis.
+- Composes naturally with query expansion: retrieve from both original + rewritten query, dedupe, re-rank the union, keep top-K. (Pro_implementation already does this in `fetch_context`; I'm tracking query expansion separately but the merge-then-rerank pattern stays.)
+
+**Constants (from `answer.py`):**
+
+```python
+RETRIEVAL_K = 20  # fetch 20 from Chroma
+FINAL_K = 10     # keep top 10 after re-ranking
+```
+
+**Pydantic schema for the re-ranker's output:**
+
+```python
+class RankOrder(BaseModel):
+    order: list[int] = Field(
+        description="The order of relevance of chunks, from most relevant to least relevant, by chunk id number"
+    )
+```
+
+The LLM returns ONLY a list of integers (the chunk IDs we showed it). Structured output via `response_format=RankOrder` makes this bullet-proof against prose drift.
+
+**Re-ranker function (lifted + adapted from `answer.py`):**
+
+```python
+@retry(wait=wait)
+def rerank(question, chunks):
+    system_prompt = """
+You are a document re-ranker.
+You are provided with a question and a list of relevant chunks of text from a query of a knowledge base.
+The chunks are provided in the order they were retrieved; this is approximately ordered by relevance, but you may be able to improve on that.
+You must rank order the provided chunks by relevance to the question, with the most relevant chunk first.
+Reply only with the list of ranked chunk ids, nothing else. Include all the chunk ids you are provided with, reranked.
+"""
+    user_prompt = f"The user has asked the following question:\n\n{question}\n\nOrder all the chunks of text by relevance to the question, from most relevant to least relevant. Include all the chunk ids you are provided with, reranked.\n\nHere are the chunks:\n\n"
+    for index, chunk in enumerate(chunks):
+        user_prompt += f"# CHUNK ID: {index + 1}:\n\n{chunk.page_content}\n\n"
+    user_prompt += "Reply only with the list of ranked chunk ids, nothing else."
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    response = completion(model=MODEL, messages=messages, response_format=RankOrder)
+    order = RankOrder.model_validate_json(response.choices[0].message.content).order
+    return [chunks[i - 1] for i in order]  # chunk ids are 1-indexed in the prompt
+```
+
+**Wiring into `fetch_context` (the "two places" you mentioned):**
+
+In `pro_implementation/answer.py`, re-rank is called inside `fetch_context` AFTER retrieval and BEFORE the answer LLM sees anything. The same `rerank()` call serves both purposes — it's just called once, and its output flows into the answer prompt.
+
+```python
+def fetch_context(original_question):
+    # 1. Retrieve RETRIEVAL_K=20 chunks (optionally union with query-expansion results)
+    chunks = fetch_context_unranked(original_question)
+    # 2. Re-rank with LLM
+    reranked = rerank(original_question, chunks)
+    # 3. Keep top FINAL_K=10
+    return reranked[:FINAL_K]
+
+def answer_question(question, history=[]):
+    chunks = fetch_context(question)  # already re-ranked + trimmed
+    messages = make_rag_messages(question, history, chunks)
+    response = completion(model=MODEL, messages=messages)
+    return response.choices[0].message.content, chunks
+```
+
+**Gotchas / footguns to watch:**
+
+- **1-indexed vs 0-indexed.** The prompt uses `CHUNK ID: {index + 1}` (1-indexed), so the return path uses `chunks[i - 1]`. If the LLM ever returns a 0 or skips a number, the indexing breaks silently. Defensive code: validate `order` is a permutation of `1..len(chunks)` before slicing; if not, fall back to the unranked order and log it.
+- **Chunk size in the prompt.** Stuffing 20 chunks × `headline+summary+original_text` into the user prompt can blow the context window on long documents. With semantic chunking active, the embedded text is bigger than a raw character-split chunk. If context overflow becomes a problem, send only `headline + summary` to the re-ranker (NOT `original_text`) — same ranking quality at a fraction of the tokens.
+- **Cost.** Re-rank adds ONE LLM call per user query. Use a cheap model (`gpt-4.1-nano` / `gpt-4o-mini`) for re-ranking; reserve the stronger model for the actual answer.
+- **Latency.** Re-ranking adds ~1-2s per query. For evals (Feature 12), this means the 100-question eval takes longer; parallelize the eval loop.
+
+**Acceptance:**
+
+- [ ] `RankOrder(BaseModel)` Pydantic class in `answer.py`.
+- [ ] `rerank(question, chunks)` function with `@retry(wait=wait_exponential(...))`.
+- [ ] `fetch_context` retrieves `RETRIEVAL_K=20` from Chroma, calls `rerank`, returns `reranked[:FINAL_K]`.
+- [ ] `FINAL_K` exposed as a config so I can A/B 5 vs 10 vs 15 in evals.
+- [ ] Defensive validation: if `order` isn't a clean permutation of `1..N`, fall back to unranked + log a warning.
+- [ ] Re-run Feature 12 evals: baseline (no re-rank) vs re-rank. Track nDCG and answer-LLM-judge deltas per category — `multi_doc` and `specific_fact` should benefit most.
+
+**Open questions to resolve while building:**
+
+- Does sending only `headline + summary` to the re-ranker (omitting `original_text`) match the quality of sending the full embedded text? Cheap experiment, big context-window savings.
+- Which model for re-ranking? `gpt-4.1-nano` vs `gpt-4o-mini` vs an open-source judge via OpenRouter — measure rank-correlation against a hand-ranked gold set for 5 representative queries.
+
+#### Recommended build order
+
+1. Get **11b (re-ranking)** working FIRST against the existing baseline (RecursiveCharacterTextSplitter chunks). It's the smaller change, isolates one variable, and gives a clean eval delta.
+2. Then layer **11a (semantic chunking)** on top. Re-run evals with both on/off in a 2x2 matrix (baseline / +rerank / +semantic / +both) so I can attribute the gains correctly instead of one big mush of changes.
+3. Only after that, revisit query rewriting / query expansion (separate ticket, out of scope for this Feature 11 elaboration).
+
 #### Feature 12 — Evals (P1)
 
 A 100-question evaluation harness (jsonl test set + forked evaluator) used to compare chunking strategies, embedding models, prompts, and retrieval techniques with quantitative feedback rather than vibes. Forked from `Week5/pro_implementation/eval.py` with deliberate modifications for personal-notes domain (not Insurellm-style factoid retrieval).
@@ -272,14 +487,128 @@ Path to this week 5 folder: /Users/tayjiasheng/AI Projects/Notes/Week5
 - [x] Draft prompt for synthetic question generator (handoff to Mode 5 Transformer #12).
 - [x] Run generator with seeds; vet 25 outputs against the heuristic above.
 - [x] Hand-curate 10 negative cases (topics I'm certain my notes don't cover).
-- [ ] Define Pydantic `TestQuestion` schema with `category` enum + optional `expected_source_ids`.
-- [ ] Fork `Week5/pro_implementation/eval.py` into project's `evaluation/eval.py`.
-- [ ] Add `calculate_recall_at_k(keywords, retrieved_docs, k)` — binary, did ANY relevant chunk appear in top k.
-- [ ] Add per-category aggregation: group by `category`, report metrics per group AND overall.
-- [ ] Add `RefusalEval(BaseModel)` Pydantic class + LLM-judge call for `negative` questions.
-- [ ] Modify `AnswerEval` prompt to apply category-aware weighting.
-- [ ] Wire eval results into Gradio UI (or CLI table) with per-category breakdown. (This one would be `evaluator.py` with a separate Gradio UI interface
-- [ ] Run baseline eval; record scores per category as the reference point before any RAG-technique experiments.
+- [x] Define Pydantic `TestQuestion` schema with `category` enum + optional `expected_source_ids`.
+- [x] Fork `Week5/pro_implementation/eval.py` into project's `evaluation/eval.py`.
+- [x] Add `calculate_recall_at_k(keywords, retrieved_docs, k)` — binary, did ANY relevant chunk appear in top k.
+- [x] Add per-category aggregation: group by `category`, report metrics per group AND overall.
+- [x] Add `RefusalEval(BaseModel)` Pydantic class + LLM-judge call for `negative` questions.
+- [x] Modify `AnswerEval` prompt to apply category-aware weighting.
+- [x] Wire eval results into Gradio UI (or CLI table) with per-category breakdown. (This one would be `evaluator.py` with a separate Gradio UI interface
+- [x] Run baseline eval; record scores per category as the reference point before any RAG-technique experiments.
+
+#### Feature 13 — Parallelized Evals + Dashboard UI Polish (P1)
+
+Run the 100-question eval set in parallel via `multiprocessing.Pool` with a tunable `WORKERS` constant, surface per-category bar charts in `evaluator.py`, color-code the headline numbers so I can tell at a glance whether changes are helping or hurting, and add `tqdm` progress bars in BOTH the CLI and the Gradio UI for visual feedback during long runs.
+
+<aside>
+📎
+
+**Reference:** [`Week5/evaluator.py`](https://github.com/jsjasee/ai_course_notes/blob/main/Week5/evaluator.py) in `jsjasee/ai_course_notes` — same color-coded HTML metric cards + `gr.BarPlot` per category pattern. The file already exists in this project's root folder; Feature 13 modifies it in place rather than creating a new one.
+
+</aside>
+
+**Design decisions (locked via clarifying questions, 23 May 2026):**
+
+- **Parallelism:** `multiprocessing.Pool` for consistency with Feature 11a's semantic-chunking pattern. Caveat: LLM eval calls are I/O-bound, so `ThreadPoolExecutor` would be the textbook choice — but `mp.Pool` works fine here and keeps the codebase uniform. If process startup overhead becomes a problem (each test is fast), the swap to `concurrent.futures.ThreadPoolExecutor` is a 5-line change.
+- **`WORKERS` is a top-of-file constant** — start at 5, drop if rate-limited.
+- **Color thresholds are top-of-file constants** — calibrated lower than the Insurellm sample because the personal-notes domain will have a weaker baseline. Tune up as the baseline improves.
+- **Charts:** MRR, nDCG, Recall@k (retrieval) + Accuracy, Completeness (answer), all per-category.
+- **tqdm in BOTH places:** CLI (terminal) via `tqdm(pool.imap_unordered(...))` AND Gradio via `gr.Progress()`. They don't fight — tqdm writes to stderr, Gradio writes to the browser.
+
+**Top-of-file constants block (paste at top of `evaluator.py`):**
+
+```python
+WORKERS = 5  # drop to 3 if rate-limited
+
+# Retrieval thresholds (tune as baseline improves)
+MRR_GREEN, MRR_AMBER = 0.7, 0.5
+NDCG_GREEN, NDCG_AMBER = 0.7, 0.5
+RECALL_GREEN, RECALL_AMBER = 80.0, 60.0      # percent
+COVERAGE_GREEN, COVERAGE_AMBER = 80.0, 60.0  # percent
+
+# Answer thresholds (1-5 scale)
+ANSWER_GREEN, ANSWER_AMBER = 4.0, 3.0
+```
+
+**Parallel eval runner pattern (mirrors Feature 11a's `create_chunks`):**
+
+```python
+from multiprocessing import Pool
+from tqdm import tqdm
+from tenacity import retry, wait_exponential
+
+wait = wait_exponential(multiplier=1, min=10, max=240)
+
+@retry(wait=wait)
+def evaluate_one_retrieval(test):
+    return test, evaluate_retrieval(test)
+
+def evaluate_all_retrieval_parallel(progress=None):
+    tests = load_tests()
+    total = len(tests)
+    results = []
+    with Pool(processes=WORKERS) as pool:
+        for i, (test, result) in enumerate(
+            tqdm(
+                pool.imap_unordered(evaluate_one_retrieval, tests),
+                total=total,
+                desc="Retrieval evals",
+            ),
+            start=1,
+        ):
+            results.append((test, result))
+            if progress is not None:
+                progress(i / total, desc=f"Evaluating test {i}/{total}...")
+    return results
+```
+
+**Extend `get_color` for new metric types:**
+
+```python
+elif metric_type == "recall":
+    return "green" if value >= RECALL_GREEN else "orange" if value >= RECALL_AMBER else "red"
+elif metric_type == "completeness":
+    return "green" if value >= ANSWER_GREEN else "orange" if value >= ANSWER_AMBER else "red"
+```
+
+**Per-category aggregation (the part the sample only does for one metric):**
+
+After the pool closes, group results by `test.category`. Build ONE `pandas.DataFrame` per metric with columns `Category | <metric>` and feed each to a separate `gr.BarPlot`. Five charts total: 3 retrieval (MRR, nDCG, Recall@k) + 2 answer (Accuracy, Completeness). Use `gr.Row()` to pair them with their matching color-coded metric card on the left.
+
+**Acceptance:**
+
+- [ ] `WORKERS` constant lives at the top of `evaluator.py`; changing it changes parallelism with zero other edits.
+- [ ] Eval run for 100 tests completes in roughly `total_time / WORKERS` seconds (with rate-limit headroom).
+- [ ] 5 color-coded HTML metric cards visible: MRR, nDCG, Recall@k, Accuracy, Completeness — all using the sample's card pattern but driven by tunable threshold constants.
+- [ ] 5 per-category `gr.BarPlot` panels, one per metric, with appropriate `y_lim`.
+- [ ] tqdm bar visible in the terminal AND Gradio progress bar updates in the UI during a run.
+- [ ] Color thresholds editable from the top of the file without touching layout code.
+- [ ] Running the same eval with `WORKERS=1` vs `WORKERS=5` produces identical numbers to 4 decimal places (aggregation must be order-independent).
+
+**TODOs:**
+
+- [ ] Add `WORKERS` + threshold constants block at the top of `evaluator.py`.
+- [ ] Wrap each `evaluate_one_*` worker function with `@retry(wait=wait_exponential(...))` from tenacity for rate-limit safety.
+- [ ] Replace the existing serial generators (`evaluate_all_retrieval`, `evaluate_all_answers`) with `Pool(processes=WORKERS) + pool.imap_unordered + tqdm(total=...)`.
+- [ ] Inside the same loop, call `progress(i/total, desc=...)` to drive the Gradio bar.
+- [ ] Extend `get_color` with `recall` and `completeness` branches.
+- [ ] Compute per-category aggregates after the pool closes; build 5 DataFrames.
+- [ ] Add 3 retrieval `gr.BarPlot` panels (MRR `y_lim=[0,1]`, nDCG `y_lim=[0,1]`, Recall@k `y_lim=[0,100]`) and 2 answer `gr.BarPlot` panels (Accuracy `y_lim=[1,5]`, Completeness `y_lim=[1,5]`).
+- [ ] Sanity check: run eval with `WORKERS=1` vs `WORKERS=5` — final per-category numbers must match exactly.
+- [ ] Optionally combine retrieval + answer into a single pool pass (one `fetch_context` per test, reused for both) — saves ~50% of retrieval calls. Track as a follow-up if speed matters more than code clarity.
+
+**Gotchas:**
+
+- **`mp.Pool` + LiteLLM + macOS:** child processes don't inherit env vars cleanly under spawn. Call `load_dotenv(override=True)` at module top so each worker re-reads `.env` on import.
+- **`imap_unordered` returns out of order:** never rely on result order for aggregation; always read `test.category` off the returned tuple.
+- **tqdm + Gradio coexistence:** they don't conflict — tqdm writes to stderr, Gradio writes to the browser. If you see buffering issues in the terminal, force-flush with `tqdm(..., file=sys.stderr, mininterval=0.1)`.
+- **Process pickling:** anything passed to `pool.imap_unordered` must be picklable. Pydantic `BaseModel` instances pickle fine; closures and lambdas don't.
+- **Rate limits:** if `gpt-4.1-nano` returns 429s at `WORKERS=5`, drop to 3 and bump `wait_exponential(max=240)` higher. Tenacity will absorb the retries silently.
+
+**Open questions:**
+
+- Combined retrieval + answer pool (one `fetch_context` call per test) vs two separate pools — measure once Feature 11a is in.
+- Whether to also chart per-category counts (e.g. "how many `multi_doc` tests are there") alongside the metric bars — small UX win, decide after first real run.
 
 #### Quality of life features
 
