@@ -26,16 +26,20 @@ class AnswerEval(BaseModel):
     """LLM-judge result for non-negative answers."""
 
     feedback: str
-    accuracy: float
-    completeness: float
-    relevance: float
+    # ✅ Bound judge scores to the intended 1-5 rubric so invalid outputs fail fast.
+    accuracy: float = Field(
+        ge=1, le=5
+    )  # ge means greater than or equal to, le means less than or equal to
+    completeness: float = Field(ge=1, le=5)
+    relevance: float = Field(ge=1, le=5)
 
 
 class RefusalEval(BaseModel):
     """LLM-judge result for negative-case refusal behavior."""
 
     feedback: str
-    refusal_correct: float
+    # ✅ Refusal correctness is binary: 0 = bad refusal, 1 = correct refusal.
+    refusal_correct: float = Field(ge=0, le=1)
 
 
 def _hit(keyword: str, docs: list, k: int) -> float:
@@ -75,10 +79,11 @@ def evaluate_retrieval(test: TestQuestion, docs: list, k: int = 10) -> Retrieval
 def _judge(test: TestQuestion, answer_md: str, model_cls: type[BaseModel]) -> BaseModel:
     """Run the category-aware LLM judge for one generated answer."""
     focus = {
-        QuestionCategory.MULTI_DOC: "Weight completeness most heavily.",
-        QuestionCategory.SPECIFIC_FACT: "Weight accuracy most heavily.",
-        QuestionCategory.EXISTENCE: "Weight completeness over wording polish.",
-        QuestionCategory.NEGATIVE: "Pass only when the answer clearly refuses and does not invent facts.",
+        # ✅ Make the scoring contract explicit so the judge stays inside the expected range.
+        QuestionCategory.MULTI_DOC: "Weight completeness most heavily. Return numeric scores only in the range 1 to 5.",
+        QuestionCategory.SPECIFIC_FACT: "Weight accuracy most heavily. Return numeric scores only in the range 1 to 5.",
+        QuestionCategory.EXISTENCE: "Weight completeness over wording polish. Return numeric scores only in the range 1 to 5.",
+        QuestionCategory.NEGATIVE: "Pass only when the answer clearly refuses and does not invent facts. Return refusal_correct as either 0 or 1 only.",
     }[test.category]
     prompt = (
         f"Question:\n{test.question}\n\nGenerated Answer:\n{answer_md}\n\nReference Answer:\n{test.reference_answer}\n\n"
@@ -87,7 +92,13 @@ def _judge(test: TestQuestion, answer_md: str, model_cls: type[BaseModel]) -> Ba
     response = completion(
         model=JUDGE_MODEL,
         messages=[
-            {"role": "system", "content": "Evaluate the answer against the reference."},
+            {
+                "role": "system",
+                "content": (
+                    "Evaluate the answer against the reference. "
+                    "Follow the requested score ranges exactly."
+                ),
+            },
             {"role": "user", "content": prompt},
         ],
         response_format=model_cls,
@@ -119,12 +130,25 @@ def evaluate_case(test: TestQuestion, k: int = 10) -> dict:
 def summarize_results(results: list[dict]) -> dict:
     """Aggregate retrieval and judge metrics overall and by category."""
     grouped = defaultdict(list)
+    # grouped is a dictionary, with values as lists. this allows you to append a key to the dict, even though the key may not be in the dictionary initially, python creates the empty list for you automatically the first time that key is used.
+    # you can do grouped[key].append(value), even though key is not in the dict.
+
     for result in results:
         grouped[result["test"].category.value].append(result)
+
+    negative_judges = [
+        row["judge"] for row in grouped.get(QuestionCategory.NEGATIVE.value, [])
+    ]
     summary = {}
+
+    print(negative_judges)
+
     for label, rows in {"overall": results, **grouped}.items():
         retrieval = [row["retrieval"] for row in rows]
         judges = [row["judge"] for row in rows]
+
+        print(judges)
+
         summary[label] = {
             "count": len(rows),
             "mrr": sum(row.mrr for row in retrieval) / len(retrieval),
@@ -138,10 +162,15 @@ def summarize_results(results: list[dict]) -> dict:
             / len(judges),
             "relevance": sum(getattr(row, "relevance", 0.0) for row in judges)
             / len(judges),
-            "refusal_correct": sum(
-                getattr(row, "refusal_correct", 0.0) for row in judges
-            )
-            / len(judges),
+            # ✅ Overall refusal correctness should reflect only negative tests, not all categories.
+            "refusal_correct": (
+                sum(getattr(row, "refusal_correct", 0.0) for row in negative_judges)
+                / len(negative_judges)
+                if label == "overall" and negative_judges
+                else sum(getattr(row, "refusal_correct", 0.0) for row in judges)
+                / len(judges)
+            ),
+            # note that getattr(row, "refusal_correct", 0.0) means for each row in judges, try to read the row.refusal_correct attribute. If it doesn't exist, return 0.0
         }
     return summary
 

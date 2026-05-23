@@ -10,6 +10,9 @@ __pycache__
 # Environment variables / secrets
 .env
 
+# test file
+**/*.jsonl
+
 # Github's default gitignore for Python
 
 # Byte-compiled / optimized / DLL files
