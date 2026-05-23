@@ -401,7 +401,7 @@ def chunk_documents(docs):
         for doc in docs:
             chunks.extend(_recursive_chunks_for_doc(doc, splitter))
     print(f"Created {len(chunks)} chunks from {len(docs)} pages")
-    print(chunks[1])
+    print(chunks)
     return chunks
 
 

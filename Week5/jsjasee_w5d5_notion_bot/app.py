@@ -14,6 +14,38 @@ APP_CSS = """
     --accent: #a45a3f;
 }
 
+@media (prefers-color-scheme: dark) {
+    :root {
+        --page-bg: linear-gradient(180deg, #16120f 0%, #221a16 100%);
+        --panel-bg: rgba(34, 26, 22, 0.9);
+        --panel-alt: rgba(44, 34, 29, 0.95);
+        --border: #5a4638;
+        --ink: #f6eadb;
+        --muted: #c4ae97;
+        --accent: #e39a72;
+    }
+}
+
+:root[data-theme="light"] {
+    --page-bg: linear-gradient(180deg, #f7f1e8 0%, #efe7db 100%);
+    --panel-bg: rgba(255, 252, 247, 0.88);
+    --panel-alt: rgba(245, 237, 223, 0.95);
+    --border: #d7c6af;
+    --ink: #2f2419;
+    --muted: #6f5b48;
+    --accent: #a45a3f;
+}
+
+:root[data-theme="dark"] {
+    --page-bg: linear-gradient(180deg, #16120f 0%, #221a16 100%);
+    --panel-bg: rgba(34, 26, 22, 0.9);
+    --panel-alt: rgba(44, 34, 29, 0.95);
+    --border: #5a4638;
+    --ink: #f6eadb;
+    --muted: #c4ae97;
+    --accent: #e39a72;
+}
+
 .gradio-container {
     background: var(--page-bg);
     color: var(--ink);
@@ -45,6 +77,34 @@ APP_CSS = """
 .panel-card .prose, .panel-card .md, .panel-card .message { color: var(--ink); }
 .sources-card a { color: var(--accent); }
 button.primary { background: var(--accent) !important; border: none !important; }
+#theme-toggle {
+    min-width: 9rem;
+    align-self: end;
+}
+"""
+
+APP_HEAD = """
+<script>
+const THEME_KEY = "notion-notes-theme";
+
+function applyTheme(theme) {
+  const root = document.documentElement;
+  if (theme === "system") root.removeAttribute("data-theme");
+  else root.setAttribute("data-theme", theme);
+  localStorage.setItem(THEME_KEY, theme);
+  const toggle = document.getElementById("theme-toggle-btn");
+  if (toggle) toggle.textContent = theme === "dark" ? "Use Light Mode" : "Use Dark Mode";
+}
+
+function cycleTheme() {
+  const current = localStorage.getItem(THEME_KEY) || "system";
+  applyTheme(current === "dark" ? "light" : "dark");
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  applyTheme(localStorage.getItem(THEME_KEY) || "system");
+});
+</script>
 """
 
 
@@ -78,10 +138,10 @@ def build_ui():
     Returns:
         Configured `gr.Blocks` app instance.
     """
-    with gr.Blocks(title="Notion Notes Assistant", css=APP_CSS) as app:
+    with gr.Blocks(title="Notion Notes Assistant", css=APP_CSS, head=APP_HEAD) as app:
         with gr.Column(elem_id="app-shell"):
             gr.Markdown(
-            """
+                """
             # Notion Notes Assistant
             Sync your Notion notes into Chroma, then chat with answers grounded in your notes.
             """,
@@ -98,9 +158,16 @@ def build_ui():
                     label="Max Notes", value=100, minimum=1, precision=0
                 )
                 sync_button = gr.Button("Sync Notion", variant="primary")
+                gr.HTML(
+                    '<button id="theme-toggle-btn" class="lg secondary" '
+                    'onclick="cycleTheme()">Use Dark Mode</button>',
+                    elem_id="theme-toggle",
+                )
 
             with gr.Row():
-                sync_status = gr.Textbox(label="Sync Status", interactive=False, lines=4)
+                sync_status = gr.Textbox(
+                    label="Sync Status", interactive=False, lines=4
+                )
 
             with gr.Row():
                 chatbot = gr.Chatbot(
