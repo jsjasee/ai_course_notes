@@ -4,11 +4,21 @@ from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings
 from litellm import completion
+from pydantic import BaseModel, Field
 
 from ingest import CHROMA_DIR, COLLECTION_NAME, EMBEDDING_MODEL
 
 ANSWER_MODEL = os.getenv("ANSWER_MODEL", "openrouter/openai/gpt-oss-120b")
 QUERY_REWRITE_MODEL = os.getenv("QUERY_REWRITE_MODEL", "openai/gpt-4.1-nano")
+RERANK_MODEL = os.getenv("RERANK_MODEL", "openai/gpt-4.1-nano")
+
+
+class RankOrder(BaseModel):
+    """Structured reranker output listing chunk ids by descending relevance."""
+
+    order: list[int] = Field(
+        description="Chunk ids ordered from most relevant to least relevant."
+    )
 
 
 def get_retriever(top_k=20):
@@ -97,6 +107,53 @@ def rewrite_question(question, history=None):
         ],
     )
     return response.choices[0].message.content.strip() or question
+
+
+def rerank(question, chunks):
+    """Return retrieved chunks reordered by LLM-judged relevance.
+
+    Args:
+        question: Original user question.
+        chunks: Retrieved chunk documents in approximate relevance order.
+
+    Returns:
+        The same chunk list, reordered from most relevant to least relevant.
+    """
+    if len(chunks) < 2:
+        return chunks
+
+    chunk_block = "\n\n".join(
+        f"# CHUNK ID: {index}\n\n{chunk.page_content}"
+        for index, chunk in enumerate(chunks, start=1)
+    )
+    response = completion(
+        model=os.getenv("RERANK_MODEL", RERANK_MODEL),
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You rerank retrieved note chunks for question answering. "
+                    "Return every provided chunk id exactly once, ordered from most relevant to least relevant."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Question:\n{question}\n\n"
+                    "Rerank all chunk ids by relevance to the question.\n\n"
+                    f"Chunks:\n\n{chunk_block}"
+                ),
+            },
+        ],
+        response_format=RankOrder,
+    )
+    ranked_ids = RankOrder.model_validate_json(response.choices[0].message.content).order
+    ranked_chunks = [
+        chunks[chunk_id - 1]
+        for chunk_id in ranked_ids
+        if 1 <= chunk_id <= len(chunks)
+    ]
+    return ranked_chunks if len(ranked_chunks) == len(chunks) else chunks
 
 
 def answer_question(question, history=None, top_k=20):
