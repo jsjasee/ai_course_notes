@@ -40,7 +40,7 @@ class DeepNeuralNetwork(nn.Module):
             nn.Dropout(dropout_prob),
         )
 
-        # Residual blocks
+        # Residual blocks (the blocks itself has layers as well?)
         self.residual_blocks = nn.ModuleList()
         for i in range(num_layers - 2):
             self.residual_blocks.append(ResidualBlock(hidden_size, dropout_prob))
@@ -77,7 +77,9 @@ class DeepNeuralNetworkRunner:
         torch.cuda.manual_seed(42)
 
     def setup(self):
-        self.vectorizer = HashingVectorizer(n_features=5000, stop_words="english", binary=True)
+        self.vectorizer = HashingVectorizer(
+            n_features=5000, stop_words="english", binary=True
+        )
 
         train_documents = [item.summary for item in self.train_data]
         X_train_np = self.vectorizer.fit_transform(train_documents)
@@ -99,7 +101,9 @@ class DeepNeuralNetworkRunner:
         self.y_val_norm = (y_val_log - self.y_mean) / self.y_std
 
         self.model = DeepNeuralNetwork(self.X_train.shape[1])
-        total_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        total_params = sum(
+            p.numel() for p in self.model.parameters() if p.requires_grad
+        )
         print(f"Deep Neural Network created with {total_params:,} parameters")
 
         if torch.cuda.is_available():
@@ -113,13 +117,16 @@ class DeepNeuralNetworkRunner:
 
         self.model.to(self.device)
         self.loss_function = nn.L1Loss()
-        self.optimizer = optim.AdamW(self.model.parameters(), lr=0.001, weight_decay=0.01)
+        self.optimizer = optim.AdamW(
+            self.model.parameters(), lr=0.001, weight_decay=0.01
+        )
         self.scheduler = CosineAnnealingLR(self.optimizer, T_max=10, eta_min=0)
 
         self.train_dataset = TensorDataset(self.X_train, self.y_train_norm)
         self.train_loader = DataLoader(self.train_dataset, batch_size=64, shuffle=True)
 
     def train(self, epochs=5):
+        # has the 4 layers of training - forward pass, loss calculation, backward pass, optimizer step.
         for epoch in range(1, epochs + 1):
             self.model.train()
             train_losses = []
@@ -143,7 +150,9 @@ class DeepNeuralNetworkRunner:
             self.model.eval()
             with torch.no_grad():
                 val_outputs = self.model(self.X_val.to(self.device))
-                val_loss = self.loss_function(val_outputs, self.y_val_norm.to(self.device))
+                val_loss = self.loss_function(
+                    val_outputs, self.y_val_norm.to(self.device)
+                )
 
                 # Convert back to original scale for meaningful metrics
                 val_outputs_orig = torch.exp(val_outputs * self.y_std + self.y_mean) - 1
