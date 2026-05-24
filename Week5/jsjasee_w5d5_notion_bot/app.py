@@ -68,6 +68,10 @@ APP_CSS = """
 .control-bar, .composer { padding: 8px; }
 .panel-card { padding: 10px; min-height: 560px; }
 .sources-card { background: var(--panel-alt); }
+.actions-row {
+    align-items: end;
+    gap: 10px;
+}
 
 .hero h1, .panel-card label, .control-bar label, .composer label {
     color: var(--ink) !important;
@@ -78,8 +82,24 @@ APP_CSS = """
 .sources-card a { color: var(--accent); }
 button.primary { background: var(--accent) !important; border: none !important; }
 #theme-toggle {
-    min-width: 9rem;
-    align-self: end;
+    min-width: 0;
+}
+#theme-toggle-btn {
+    width: 45px;
+    height: 45px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--panel-alt);
+    color: var(--ink);
+    cursor: pointer;
+    font-size: 1.35rem;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+#theme-toggle-btn:hover {
+    border-color: var(--accent);
 }
 """
 
@@ -93,7 +113,12 @@ function applyTheme(theme) {
   else root.setAttribute("data-theme", theme);
   localStorage.setItem(THEME_KEY, theme);
   const toggle = document.getElementById("theme-toggle-btn");
-  if (toggle) toggle.textContent = theme === "dark" ? "Use Light Mode" : "Use Dark Mode";
+  if (toggle) {
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    toggle.textContent = nextTheme === "dark" ? "🌙" : "☀️";
+    toggle.setAttribute("aria-label", `Switch to ${nextTheme} mode`);
+    toggle.setAttribute("title", `Switch to ${nextTheme} mode`);
+  }
 }
 
 function cycleTheme() {
@@ -157,12 +182,12 @@ def build_ui():
                 max_notes = gr.Number(
                     label="Max Notes", value=100, minimum=1, precision=0
                 )
-                sync_button = gr.Button("Sync Notion", variant="primary")
-                gr.HTML(
-                    '<button id="theme-toggle-btn" class="lg secondary" '
-                    'onclick="cycleTheme()">Use Dark Mode</button>',
-                    elem_id="theme-toggle",
-                )
+                with gr.Row(elem_classes="actions-row", scale=1):
+                    sync_button = gr.Button("Sync Notion", variant="primary")
+                    gr.HTML(
+                        '<button id="theme-toggle-btn" onclick="cycleTheme()">🌙</button>',
+                        elem_id="theme-toggle",
+                    )
 
             with gr.Row():
                 sync_status = gr.Textbox(

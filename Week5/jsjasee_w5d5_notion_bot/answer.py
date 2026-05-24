@@ -13,6 +13,7 @@ QUERY_REWRITE_MODEL = os.getenv("QUERY_REWRITE_MODEL", "openai/gpt-4.1-nano")
 RERANK_MODEL = os.getenv("RERANK_MODEL", "openai/gpt-4.1-nano")
 RETRIEVAL_K = int(os.getenv("RETRIEVAL_K", "20"))
 FINAL_K = int(os.getenv("FINAL_K", "10"))
+PREVIEW_CHUNKS = 300
 
 
 class RankOrder(BaseModel):
@@ -196,7 +197,8 @@ def answer_question(question, history=None, top_k=None):
         # if page_id in seen_page_ids:
         #     continue
         seen_page_ids.add(page_id)
-        preview = chunk.page_content.replace("\n", " ").strip()[:300]
+        # preview = chunk.page_content.replace("\n", " ").strip()[:PREVIEW_CHUNKS]
+        preview = chunk.page_content.replace("\n", " ").strip()
         source_lines.append(
             f"- **{meta['title']}** ({meta.get('notebook', '')}) "
             f"[Notion link]({meta['url']})\n"
