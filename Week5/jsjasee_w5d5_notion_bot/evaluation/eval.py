@@ -1,16 +1,22 @@
 import math
 import os
+import sys
 from collections import defaultdict
+from multiprocessing import Pool
 
 from dotenv import load_dotenv
 from litellm import completion
 from pydantic import BaseModel, Field
+from tenacity import retry, wait_exponential
+from tqdm import tqdm
 
 from answer import ANSWER_MODEL, build_prompt, get_retriever
 from evaluation.test import QuestionCategory, TestQuestion, load_tests
 
 load_dotenv(override=True)
 JUDGE_MODEL = os.getenv("EVAL_JUDGE_MODEL", "openai/gpt-4.1-nano")
+WORKERS = int(os.getenv("EVAL_WORKERS", "5"))
+RETRY_WAIT = wait_exponential(multiplier=1, min=10, max=240)
 
 
 class RetrievalEval(BaseModel):
@@ -127,6 +133,38 @@ def evaluate_case(test: TestQuestion, k: int = 10) -> dict:
     return {"test": test, "retrieval": retrieval, "answer": answer_md, "judge": judge}
 
 
+# look at notion for explanation of how evaluate_one_case and evaluate_all_cases work.
+@retry(wait=RETRY_WAIT)
+def evaluate_one_case(args: tuple[TestQuestion, int]) -> dict:
+    """Evaluate one test case inside a pool worker."""
+    test, k = args
+    return evaluate_case(test, k=k)
+
+
+def evaluate_all_cases(k: int = 10, progress=None) -> list[dict]:
+    """Evaluate all tests in parallel and stream progress to CLI and Gradio."""
+    tests = load_tests()
+    total = len(tests)
+    if not total:
+        return []
+
+    results = []
+    if progress is not None:
+        progress(0, desc="Starting evals...")
+
+    with Pool(processes=WORKERS) as pool:
+        iterator = pool.imap_unordered(evaluate_one_case, [(test, k) for test in tests])
+        # this iterator behaves like a generator, it will yield one result at a time as the for loop runs through it.
+        for index, result in enumerate(
+            tqdm(iterator, total=total, desc="Evals", file=sys.stderr, mininterval=0.1),
+            start=1,
+        ):
+            results.append(result)
+            if progress is not None:
+                progress(index / total, desc=f"Evaluating test {index}/{total}...")
+    return results
+
+
 def summarize_results(results: list[dict]) -> dict:
     """Aggregate retrieval and judge metrics overall and by category."""
     grouped = defaultdict(list)
@@ -175,6 +213,6 @@ def summarize_results(results: list[dict]) -> dict:
     return summary
 
 
-def load_and_evaluate(k: int = 10) -> dict:
-    """Load tests, evaluate each case, and return aggregated metrics."""
-    return summarize_results([evaluate_case(test, k=k) for test in load_tests()])
+def load_and_evaluate(k: int = 10, progress=None) -> dict:
+    """Load tests, evaluate them in parallel, and return aggregated metrics."""
+    return summarize_results(evaluate_all_cases(k=k, progress=progress))
