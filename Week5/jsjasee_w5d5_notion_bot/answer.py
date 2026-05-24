@@ -200,7 +200,7 @@ def answer_question(question, history=None, top_k=None):
         # preview = chunk.page_content.replace("\n", " ").strip()[:PREVIEW_CHUNKS]
         preview = chunk.page_content.replace("\n", " ").strip()
         source_lines.append(
-            f"- **{meta['title']}** ({meta.get('notebook', '')}) "
+            f"- **{meta['title']}** ({meta.get('page_id', '')}) "
             f"[Notion link]({meta['url']})\n"
             f"  chunk {meta['chunk_index']}: {preview}..."
         )
