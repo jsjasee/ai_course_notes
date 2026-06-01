@@ -32,14 +32,17 @@ class Preprocessor:
             self.base_url = "http://localhost:11434"
 
     def messages_for(self, text: str) -> list[dict]:
-        return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": text}]
+        return [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": text},
+        ]
 
     def preprocess(self, text: str) -> str:
         messages = self.messages_for(text)
         response = completion(
             messages=messages,
             model=self.model_name,
-            reasoning_effort=self.reasoning_effort,
+            # reasoning_effort=self.reasoning_effort, # we are using an open router model, there's a special way to set the reasoning effort, like this => reasoning={"effort": "low"}, to save the hassle we just don't set reasoning effort
             api_base=self.base_url,
         )
         self.total_input_tokens += response.usage.prompt_tokens

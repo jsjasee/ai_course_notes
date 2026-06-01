@@ -1,3 +1,5 @@
+# the following code is just using python code to orchestrate the 3 calls to 3 different models
+# there's no 'autonomy' in this yet.
 from agents.agent import Agent
 from agents.specialist_agent import SpecialistAgent
 from agents.frontier_agent import FrontierAgent
@@ -17,8 +19,8 @@ class EnsembleAgent(Agent):
         self.log("Initializing Ensemble Agent")
         self.specialist = SpecialistAgent()
         self.frontier = FrontierAgent(collection)
-        self.neural_network = NeuralNetworkAgent()
-        self.preprocessor = Preprocessor()
+        # self.neural_network = NeuralNetworkAgent()
+        self.preprocessor = Preprocessor()  # it creates the pre-processor, to rewrite it in a format that is suitable for our agents.
         self.log("Ensemble Agent is ready")
 
     def price(self, description: str) -> float:
@@ -30,11 +32,14 @@ class EnsembleAgent(Agent):
         :return: an estimate of its price
         """
         self.log("Running Ensemble Agent - preprocessing text")
-        rewrite = self.preprocessor.preprocess(description)
+        rewrite = self.preprocessor.preprocess(
+            description
+        )  # use the pre-processor to rewrite it
         self.log(f"Pre-processed text using {self.preprocessor.model_name}")
         specialist = self.specialist.price(rewrite)
         frontier = self.frontier.price(rewrite)
-        neural_network = self.neural_network.price(rewrite)
-        combined = frontier * 0.8 + specialist * 0.1 + neural_network * 0.1
+        # neural_network = self.neural_network.price(rewrite)
+        # combined = frontier * 0.8 + specialist * 0.1 + neural_network * 0.1
+        combined = frontier * 0.8 + specialist * 0.2
         self.log(f"Ensemble Agent complete - returning ${combined:.2f}")
         return combined

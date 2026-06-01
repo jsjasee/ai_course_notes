@@ -3,7 +3,7 @@ import modal
 from modal import Volume, Image
 # Setup - define our infrastructure with code!
 
-app = modal.App("pricer-service")
+app = modal.App("pricer-service")  # this is the name of our app
 image = Image.debian_slim().pip_install(
     "huggingface", "torch", "transformers", "bitsandbytes", "accelerate", "peft"
 )
@@ -30,7 +30,8 @@ QUESTION = "What does this cost to the nearest dollar?"
 
 hf_cache_volume = Volume.from_name(
     "hf-hub-cache", create_if_missing=True
-)  # caching? what's a volume? we don't have to re-download the modal weights everytime, it will be stored with this deployment.
+)  # caching? what's a volume? we don't have to re-download the modal weights everytime, it will be stored permanently after the initial deployment.
+# a volume (like a docker volume) is just a storage on the cloud, the name of our cache is 'hf-hub-cache', we can find this under 'storage' in modal
 
 
 @app.cls(
@@ -39,12 +40,14 @@ hf_cache_volume = Volume.from_name(
     gpu=GPU,
     timeout=1800,
     min_containers=MIN_CONTAINERS,
-    volumes={CACHE_DIR: hf_cache_volume},
+    volumes={
+        CACHE_DIR: hf_cache_volume
+    },  # the directory is for the cache is "/cache" which will take the cache that was stored previously
 )
 
 # we use a class instead of a function, this gives us an opportunity to cache the data, free of charge, and it will take faster to start-up the container!
 class Pricer:
-    @modal.enter()  # what does this decorator mean? it means that the below is what should run the first time when the container is built? the subsequent times it will just call price?
+    @modal.enter()  # what does this decorator mean? it means that the below is what should run the first time when the container is started up. the subsequent times when the code is executed will just call price, we dont need to re-run the setup, unless the container is killed by modal.
     def setup(self):
         import torch
         from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig

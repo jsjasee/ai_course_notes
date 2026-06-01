@@ -73,7 +73,7 @@ class ScannerAgent(Agent):
                     {"role": "system", "content": self.SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
-                response_format=DealSelection,
+                response_format=DealSelection,  # where we parsed in the structured outputs
                 reasoning_effort="minimal",
             )
             result = result.choices[0].message.parsed

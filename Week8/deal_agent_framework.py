@@ -62,6 +62,8 @@ class DealAgentFramework:
             self.planner = PlanningAgent(self.collection)
             self.log("Agent Framework is ready")
 
+    # We added memory here -> memory is about loading and saving something from the disk.
+    # Memory is a tool that you give an agent so that it can look things up in memory, it is just something you will shove in the prompt -> so that it knows about prior conversations and deals surfaced in the past
     def read_memory(self) -> List[Opportunity]:
         if os.path.exists(self.MEMORY_FILENAME):
             with open(self.MEMORY_FILENAME, "r") as file:

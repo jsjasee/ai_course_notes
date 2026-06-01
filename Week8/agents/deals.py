@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Self
 from bs4 import BeautifulSoup
 import re
-import feedparser
+import feedparser  # this is an open sourced library to read rss feeds
 from tqdm import tqdm
 import requests
 import time
@@ -54,7 +54,9 @@ class ScrapedDeal:
         self.summary = extract(entry["summary"])
         self.url = entry["links"][0]["href"]
         stuff = requests.get(self.url).content
-        soup = BeautifulSoup(stuff, "html.parser")
+        soup = BeautifulSoup(
+            stuff, "html.parser"
+        )  # we extract as much information as possible about the product from the website
         content = soup.find("div", class_="content-section").get_text()
         content = content.replace("\nmore", "").replace("\n", " ")
         if "Features" in content:
@@ -93,6 +95,7 @@ class ScrapedDeal:
         feed_iter = tqdm(feeds) if show_progress else feeds
         for feed_url in feed_iter:
             feed = feedparser.parse(feed_url)
+            # we are taking the first 10 feeds
             for entry in feed.entries[:10]:
                 deals.append(cls(entry))
                 time.sleep(0.05)

@@ -28,7 +28,7 @@ class AutonomousPlanningAgent(Agent):
 
     def scan_the_internet_for_bargains(self) -> str:
         """
-        Run the tool to scan
+        Run the tool to scan (replaces our 'fake' function in the jupyter notebook)
         """
         self.log("Autonomous Planning agent is calling scanner")
         results = self.scanner.scan(memory=self.memory)
@@ -49,7 +49,9 @@ class AutonomousPlanningAgent(Agent):
         Run the tool to notify the user
         """
         if self.opportunity:
-            self.log("Autonomous Planning agent is trying to notify the user a 2nd time; ignoring")
+            self.log(
+                "Autonomous Planning agent is trying to notify the user a 2nd time; ignoring"
+            )
         else:
             self.log("Autonomous Planning agent is notifying user")
             self.messenger.notify(description, deal_price, estimated_true_value, url)
@@ -129,6 +131,7 @@ class AutonomousPlanningAgent(Agent):
         """
         Actually call the tools associated with this message
         """
+        # something more bulletproof here is we have a dictionary mapped to functions.
         mapping = {
             "scan_the_internet_for_bargains": self.scan_the_internet_for_bargains,
             "estimate_true_value": self.estimate_true_value,
@@ -140,7 +143,9 @@ class AutonomousPlanningAgent(Agent):
             arguments = json.loads(tool_call.function.arguments)
             tool = mapping.get(tool_name)
             result = tool(**arguments) if tool else ""
-            results.append({"role": "tool", "content": result, "tool_call_id": tool_call.id})
+            results.append(
+                {"role": "tool", "content": result, "tool_call_id": tool_call.id}
+            )
         return results
 
     system_message = "You find great deals on bargain products using your tools, and notify the user of the best bargain."
@@ -165,6 +170,7 @@ class AutonomousPlanningAgent(Agent):
         self.opportunity = None
         messages = self.messages[:]
         done = False
+        # this is our agent loop - the while loop
         while not done:
             response = self.openai.chat.completions.create(
                 model=self.MODEL, messages=messages, tools=self.get_tools()

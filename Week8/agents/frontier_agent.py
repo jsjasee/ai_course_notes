@@ -1,3 +1,5 @@
+# production ready code that is turned from the notebook (docstrings and type hints)
+# always start from the notebook so you have an experimental mindset
 import re
 from typing import List, Dict
 from openai import OpenAI
@@ -33,7 +35,9 @@ class FrontierAgent(Agent):
         """
         message = "To provide some context, here are some other items that might be similar to the item you need to estimate.\n\n"
         for similar, price in zip(similars, prices):
-            message += f"Potentially related product:\n{similar}\nPrice is ${price:.2f}\n\n"
+            message += (
+                f"Potentially related product:\n{similar}\nPrice is ${price:.2f}\n\n"
+            )
         return message
 
     def messages_for(
@@ -59,7 +63,9 @@ class FrontierAgent(Agent):
             "Frontier Agent is performing a RAG search of the Chroma datastore to find 5 similar products"
         )
         vector = self.model.encode([description])
-        results = self.collection.query(query_embeddings=vector.astype(float).tolist(), n_results=5)
+        results = self.collection.query(
+            query_embeddings=vector.astype(float).tolist(), n_results=5
+        )
         documents = results["documents"][0][:]
         prices = [m["price"] for m in results["metadatas"][0][:]]
         self.log("Frontier Agent has found similar products")

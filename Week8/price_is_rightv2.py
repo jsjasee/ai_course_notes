@@ -44,6 +44,49 @@ def setup_logging(log_queue):
 class App:
     def __init__(self):
         self.agent_framework = None
+        # ⭐️ added some states to App
+        self.log_data = []
+        self.latest_table = []
+        self.agent_running = False
+        self.lock = threading.Lock()  # what does this do??
+        self.log_queue = queue.Queue()
+
+        self.stop_event = threading.Event()
+
+    def agent_loop(self):
+        # ⭐️ make a background loop, which is better than while True: time.sleep(300) because stop_event.wait(300) can be stopped cleanly later. - how so?
+        while not self.stop_event.is_set():
+            with self.lock:
+                already_running = self.agent_running
+
+            if not already_running:
+                with self.lock:
+                    self.agent_running = True
+
+                try:
+                    opportunities = self.get_agent_framework().run()
+                    table = [
+                        [
+                            opp.deal.product_description,
+                            f"${opp.deal.price:.2f}",
+                            f"${opp.estimate:.2f}",
+                            f"${opp.discount:.2f}",
+                            opp.deal.url,
+                        ]
+                        for opp in opportunities
+                    ]
+
+                    with self.lock:
+                        self.latest_table = table
+
+                except Exception as e:
+                    logging.exception(f"Agent run failed: {e}")
+
+                finally:
+                    with self.lock:
+                        self.agent_running = False
+
+            self.stop_event.wait(300)
 
     def get_agent_framework(self):
         if not self.agent_framework:
@@ -53,6 +96,24 @@ class App:
     def run(self):
         with gr.Blocks(title="The Price is Right", fill_width=True) as ui:
             log_data = gr.State([])
+
+            # ⭐️ make gradio only refresh the ui
+            def refresh_ui():
+                # 1. DRAIN: pull everything that piled up since the last tick
+                while True:
+                    try:
+                        message = self.log_queue.get_nowait()  # non-blocking grab
+                    except queue.Empty:
+                        break  # nothing left -> stop
+                    self.log_data.append(
+                        reformat(message)
+                    )  # add it to our running list
+
+                # 2. read the shared table safely (the agent loop thread writes to this table once the deal is fetched, then we write the latest one)
+                with self.lock:
+                    table = self.latest_table
+
+                return html_for(self.log_data), table
 
             def table_for(opps):
                 return [
@@ -65,31 +126,6 @@ class App:
                     ]
                     for opp in opps
                 ]
-
-            def update_output(log_data, log_queue, result_queue):
-                initial_result = table_for(self.get_agent_framework().memory)
-                final_result = None
-                while True:
-                    try:
-                        message = log_queue.get_nowait()
-                        log_data.append(reformat(message))
-                        yield (
-                            log_data,
-                            html_for(log_data),
-                            final_result or initial_result,
-                        )
-                    except queue.Empty:
-                        try:
-                            final_result = result_queue.get_nowait()
-                            yield (
-                                log_data,
-                                html_for(log_data),
-                                final_result or initial_result,
-                            )
-                        except queue.Empty:
-                            if final_result is not None:
-                                break
-                            time.sleep(0.1)
 
             def get_initial_plot():
                 fig = go.Figure()
@@ -135,28 +171,6 @@ class App:
 
                 return fig
 
-            def do_run():
-                new_opportunities = self.get_agent_framework().run()
-                table = table_for(new_opportunities)
-                return table
-
-            def run_with_logging(initial_log_data):
-                log_queue = queue.Queue()
-                result_queue = queue.Queue()
-                setup_logging(log_queue)
-
-                def worker():
-                    result = do_run()
-                    result_queue.put(result)
-
-                thread = threading.Thread(target=worker)
-                thread.start()
-
-                for log_data, output, final_result in update_output(
-                    initial_log_data, log_queue, result_queue
-                ):
-                    yield log_data, output, final_result
-
             def do_select(selected_index: gr.SelectData):
                 opportunities = self.get_agent_framework().memory
                 row = selected_index.index[0]
@@ -192,24 +206,34 @@ class App:
                 with gr.Column(scale=1):
                     plot = gr.Plot(value=get_plot(), show_label=False)
 
-            ui.load(
-                run_with_logging,
-                inputs=[log_data],
-                outputs=[log_data, logs, opportunities_dataframe],
-            )
+            # timer = gr.Timer(
+            #     value=300, active=True
+            # )  # it sets a timer, that means this is always running every 300 seconds, or 5 minutes
+            # # this timer is a bit unrealiable, sometimes it doesn't run, so can just implement like a server-side timer and then update the table on the ui
+            # timer.tick(
+            #     run_with_logging,
+            #     inputs=[log_data],
+            #     outputs=[log_data, logs, opportunities_dataframe],
+            # )
 
-            timer = gr.Timer(
-                value=300, active=True
-            )  # it sets a timer, that means this is always running every 300 seconds, or 5 minutes
-            # this timer is a bit unrealiable, sometimes it doesn't run, so can just implement like a server-side timer and then update the table on the ui
+            # timer should ONLY refresh the UI
+            timer = gr.Timer(value=5, active=True)
+
             timer.tick(
-                run_with_logging,
-                inputs=[log_data],
-                outputs=[log_data, logs, opportunities_dataframe],
+                refresh_ui,
+                outputs=[logs, opportunities_dataframe],
             )
 
             opportunities_dataframe.select(do_select)
 
+        # improvements:
+        setup_logging(self.log_queue)  # 1. plumbing, once
+        self.latest_table = table_for(
+            self.get_agent_framework().memory
+        )  # 2. seed so it's not blank
+
+        # ⭐️ start the thread right before ui launch, start the one worker only
+        threading.Thread(target=self.agent_loop, daemon=True).start()
         ui.launch(share=False, inbrowser=True)
 
 

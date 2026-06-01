@@ -3,6 +3,7 @@ from agents.deals import Opportunity
 from agents.agent import Agent
 from litellm import completion
 import requests
+import telebot
 
 pushover_url = "https://api.pushover.net/1/messages.json"
 
@@ -10,7 +11,8 @@ pushover_url = "https://api.pushover.net/1/messages.json"
 class MessagingAgent(Agent):
     name = "Messaging Agent"
     color = Agent.WHITE
-    MODEL = "claude-sonnet-4-5"
+    MODEL = "openrouter/openai/gpt-oss-20b"
+    # im using telegram api here instead
 
     def __init__(self):
         """
@@ -19,22 +21,30 @@ class MessagingAgent(Agent):
         whichever is specified in the constants
         """
         self.log("Messaging Agent is initializing")
-        self.pushover_user = os.getenv("PUSHOVER_USER", "your-pushover-user-if-not-using-env")
-        self.pushover_token = os.getenv("PUSHOVER_TOKEN", "your-pushover-user-if-not-using-env")
+        # self.pushover_user = os.getenv(
+        #     "PUSHOVER_USER", "your-pushover-user-if-not-using-env"
+        # )
+        # self.pushover_token = os.getenv(
+        #     "PUSHOVER_TOKEN", "your-pushover-user-if-not-using-env"
+        # )
+        self.chat_id = os.getenv("CHAT_ID")
+        self.bot = telebot.TeleBot(token=os.getenv("BOT_TOKEN"))
         self.log("Messaging Agent has initialized Pushover and Claude")
 
     def push(self, text):
         """
-        Send a Push Notification using the Pushover API
+        Send a Push Notification using the Pushover API or telegram bot API
         """
         self.log("Messaging Agent is sending a push notification")
-        payload = {
-            "user": self.pushover_user,
-            "token": self.pushover_token,
-            "message": text,
-            "sound": "cashregister",
-        }
-        requests.post(pushover_url, data=payload)
+        # payload = {
+        #     "user": self.pushover_user,
+        #     "token": self.pushover_token,
+        #     "message": text,
+        #     "sound": "cashregister",
+        # }
+        # requests.post(pushover_url, data=payload)
+        self.bot.send_message(self.chat_id, text)
+        self.log("Messaging Agent has completed")
 
     def alert(self, opportunity: Opportunity):
         """
@@ -45,7 +55,8 @@ class MessagingAgent(Agent):
         text += f"Discount=${opportunity.discount:.2f} :"
         text += opportunity.deal.product_description[:10] + "... "
         text += opportunity.deal.url
-        self.push(text)
+        # self.push(text)
+        self.bot.send_message(self.chat_id, text)
         self.log("Messaging Agent has completed")
 
     def craft_message(
@@ -62,11 +73,14 @@ class MessagingAgent(Agent):
         )
         return response.choices[0].message.content
 
-    def notify(self, description: str, deal_price: float, estimated_true_value: float, url: str):
+    def notify(
+        self, description: str, deal_price: float, estimated_true_value: float, url: str
+    ):
         """
         Make an alert about the specified details
         """
         self.log("Messaging Agent is using Claude to craft the message")
         text = self.craft_message(description, deal_price, estimated_true_value)
-        self.push(text[:200] + "... " + url)
+        # self.push(text[:200] + "... " + url)
+        self.bot.send_message(self.chat_id, text[:200] + "... " + url)
         self.log("Messaging Agent has completed")
